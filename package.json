@@ -1,0 +1,22 @@
+{
+  "name": "csv-ingestion-pipeline",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev:api": "dotenv -e .env.local -- npm --prefix ingestion-api run dev",
+    "dev:worker": "dotenv -e .env.local -- npm --prefix worker run dev",
+    "start:api": "dotenv -e .env.local -- npm --prefix ingestion-api run start",
+    "start:worker": "dotenv -e .env.local -- npm --prefix worker run start",
+    "start:dlq-handler": "dotenv -e .env.local -- node worker/src/dlq-handler.js",
+    "docker": "docker-compose up --build"
+  },
+  "workspaces": [
+    "ingestion-api",
+    "worker",
+    "shared"
+  ],
+  "devDependencies": {
+    "@types/uuid": "^10.0.0",
+    "dotenv-cli": "^11.0.0"
+  }
+}

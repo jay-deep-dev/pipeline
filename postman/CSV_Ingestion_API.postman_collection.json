@@ -1,0 +1,250 @@
+{
+	"info": {
+		"_postman_id": "csv-ingestion-api-collection",
+		"name": "CSV Ingestion API",
+		"description": "Postman collection for CSV Ingestion Pipeline API endpoints.\n\nThis collection includes:\n- Health check endpoint\n- File upload endpoint\n- Status check endpoint (placeholder)\n\n## Setup\n1. Import this collection into Postman\n2. Set the `base_url` variable to your API URL (default: http://localhost:3000)\n3. Use the file upload request to upload CSV files\n\n## Environment Variables\n- `base_url`: Base URL for the API (default: http://localhost:3000)",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "Health Check",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/health",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"health"
+					]
+				},
+				"description": "Check if the ingestion API service is healthy and running.\n\n**Response:**\n- Status 200: Service is healthy\n- Returns service status and timestamp"
+			},
+			"response": []
+		},
+		{
+			"name": "Upload CSV File",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "formdata",
+					"formdata": [
+						{
+							"key": "file",
+							"type": "file",
+							"src": [],
+							"description": "CSV file to upload. Must be a valid CSV file.\n\n**Requirements:**\n- File extension: .csv\n- File size: Max 5000 MB (configurable)\n- Required columns: id, name, email, created_at (configurable)\n- Valid CSV format with headers"
+						}
+					]
+				},
+				"url": {
+					"raw": "{{base_url}}/api/v1/upload",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"api",
+						"v1",
+						"upload"
+					]
+				},
+				"description": "Upload a CSV file for ingestion.\n\n**Flow:**\n1. File is uploaded via multipart/form-data\n2. File is validated (size, type, format)\n3. If validation passes, Kafka event is produced\n4. Response includes job metadata\n\n**Success Response (201):**\n```json\n{\n  \"success\": true,\n  \"jobId\": \"550e8400-e29b-41d4-a716-446655440000\",\n  \"fileId\": \"660e8400-e29b-41d4-a716-446655440001\",\n  \"fileName\": \"data.csv\",\n  \"fileSize\": 1048576,\n  \"headers\": [\"id\", \"name\", \"email\", \"created_at\"],\n  \"estimatedRowCount\": 10000,\n  \"status\": \"pending\",\n  \"message\": \"File uploaded and validated successfully. Processing will begin shortly.\",\n  \"processingTimeMs\": 1234\n}\n```\n\n**Error Response (400):**\n```json\n{\n  \"error\": \"Validation failed\",\n  \"code\": \"MISSING_COLUMNS\",\n  \"message\": \"Missing required columns: id, name\",\n  \"details\": { ... }\n}\n```\n\n**Error Codes:**\n- `NO_FILE`: No file provided in request\n- `FILE_TOO_LARGE`: File exceeds maximum size\n- `INVALID_FILE_TYPE`: File is not a CSV\n- `EMPTY_FILE`: File is empty\n- `NO_HEADERS`: CSV has no headers\n- `MISSING_COLUMNS`: Required columns are missing\n- `CSV_PARSE_ERROR`: CSV parsing failed\n- `INTERNAL_ERROR`: Unexpected server error"
+			},
+			"response": [
+				{
+					"name": "Success - File Uploaded",
+					"originalRequest": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "file",
+									"type": "file",
+									"src": []
+								}
+							]
+						},
+						"url": {
+							"raw": "{{base_url}}/api/v1/upload",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"upload"
+							]
+						}
+					},
+					"status": "OK",
+					"code": 201,
+					"_postman_previewlanguage": "json",
+					"header": [
+						{
+							"key": "Content-Type",
+							"value": "application/json"
+						}
+					],
+					"cookie": [],
+					"body": "{\n    \"success\": true,\n    \"jobId\": \"550e8400-e29b-41d4-a716-446655440000\",\n    \"fileId\": \"660e8400-e29b-41d4-a716-446655440001\",\n    \"fileName\": \"sample.csv\",\n    \"fileSize\": 123456,\n    \"headers\": [\"id\", \"name\", \"email\", \"created_at\"],\n    \"estimatedRowCount\": 1000,\n    \"status\": \"pending\",\n    \"message\": \"File uploaded and validated successfully. Processing will begin shortly.\",\n    \"processingTimeMs\": 1234\n}"
+				},
+				{
+					"name": "Error - Validation Failed",
+					"originalRequest": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "file",
+									"type": "file",
+									"src": []
+								}
+							]
+						},
+						"url": {
+							"raw": "{{base_url}}/api/v1/upload",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"upload"
+							]
+						}
+					},
+					"status": "Bad Request",
+					"code": 400,
+					"_postman_previewlanguage": "json",
+					"header": [
+						{
+							"key": "Content-Type",
+							"value": "application/json"
+						}
+					],
+					"cookie": [],
+					"body": "{\n    \"error\": \"Validation failed\",\n    \"code\": \"MISSING_COLUMNS\",\n    \"message\": \"Missing required columns: id, name\",\n    \"details\": {\n        \"filePath\": \"/path/to/file.csv\",\n        \"headers\": [\"email\", \"created_at\"],\n        \"requiredColumns\": [\"id\", \"name\", \"email\", \"created_at\"],\n        \"missingColumns\": [\"id\", \"name\"]\n    },\n    \"processingTimeMs\": 567\n}"
+				},
+				{
+					"name": "Error - File Too Large",
+					"originalRequest": {
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "file",
+									"type": "file",
+									"src": []
+								}
+							]
+						},
+						"url": {
+							"raw": "{{base_url}}/api/v1/upload",
+							"host": [
+								"{{base_url}}"
+							],
+							"path": [
+								"api",
+								"v1",
+								"upload"
+							]
+						}
+					},
+					"status": "Bad Request",
+					"code": 400,
+					"_postman_previewlanguage": "json",
+					"header": [
+						{
+							"key": "Content-Type",
+							"value": "application/json"
+						}
+					],
+					"cookie": [],
+					"body": "{\n    \"error\": \"File too large\",\n    \"code\": \"FILE_TOO_LARGE\",\n    \"message\": \"File size exceeds maximum allowed size of 5000 MB\",\n    \"maxSizeMB\": 5000,\n    \"processingTimeMs\": 123\n}"
+				}
+			]
+		},
+		{
+			"name": "Check Upload Status",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/api/v1/upload/status/:jobId",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"api",
+						"v1",
+						"upload",
+						"status",
+						":jobId"
+					],
+					"variable": [
+						{
+							"key": "jobId",
+							"value": "550e8400-e29b-41d4-a716-446655440000",
+							"description": "Job ID returned from upload endpoint"
+						}
+					]
+				},
+				"description": "Check the status of an upload job.\n\n**Note:** This is a placeholder endpoint. In production, this would query a job status database or cache.\n\n**Response:**\n```json\n{\n  \"jobId\": \"550e8400-e29b-41d4-a716-446655440000\",\n  \"status\": \"pending\",\n  \"message\": \"Job status tracking not implemented in this version\"\n}\n```"
+			},
+			"response": []
+		}
+	],
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					"// Set default base_url if not set",
+					"if (!pm.collectionVariables.get('base_url')) {",
+					"    pm.collectionVariables.set('base_url', 'http://localhost:3000');",
+					"}"
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					"// Log response for debugging",
+					"if (pm.response.code === 201) {",
+					"    const response = pm.response.json();",
+					"    console.log('Upload successful!');",
+					"    console.log('Job ID:', response.jobId);",
+					"    console.log('File ID:', response.fileId);",
+					"    ",
+					"    // Store jobId for status check",
+					"    pm.collectionVariables.set('last_job_id', response.jobId);",
+					"}"
+				]
+			}
+		}
+	],
+	"variable": [
+		{
+			"key": "base_url",
+			"value": "http://localhost:3000",
+			"type": "string"
+		},
+		{
+			"key": "last_job_id",
+			"value": "",
+			"type": "string"
+		}
+	]
+}

@@ -1,0 +1,13 @@
+{
+  "name": "@csv-pipeline/shared",
+  "version": "1.0.0",
+  "description": "Shared utilities and configurations for CSV ingestion pipeline",
+  "main": "index.js",
+  "type": "module",
+  "dependencies": {
+    "kafkajs": "^2.2.4",
+    "dotenv": "^16.3.1",
+    "csv-parser": "^3.0.0"
+  }
+}
+

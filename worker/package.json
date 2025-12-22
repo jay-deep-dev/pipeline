@@ -1,0 +1,21 @@
+{
+  "name": "@csv-pipeline/worker",
+  "version": "1.0.0",
+  "description": "CSV Ingestion Worker - consumes Kafka events and inserts data into MongoDB",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js"
+  },
+  "dependencies": {
+    "kafkajs": "^2.2.4",
+    "mongodb": "^6.3.0",
+    "csv-parser": "^3.0.0",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+}
+
