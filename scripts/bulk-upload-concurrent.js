@@ -5,13 +5,15 @@
  * 
  * Tests the CSV ingestion API by uploading multiple CSV files.
  * Uses streaming for efficient CSV generation.
+ * Supports concurrent uploads for better throughput.
  * 
  * Usage:
- *   node scripts/bulk-upload-test.js [file_count] [rows_per_file]
+ *   node scripts/bulk-upload-test.js [file_count] [rows_per_file] [concurrency]
  * 
  * Examples:
- *   node scripts/bulk-upload-test.js 10 1000
- *   node scripts/bulk-upload-test.js 100 10000
+ *   node scripts/bulk-upload-test.js 10 1000        # Sequential (1 at a time)
+ *   node scripts/bulk-upload-test.js 10 1000 3      # 3 files at once
+ *   node scripts/bulk-upload-test.js 100 10000 5    # 5 files at once
  */
 
 import { createWriteStream, createReadStream } from 'fs';
@@ -27,11 +29,13 @@ const __dirname = dirname(__filename);
 const API_URL = process.env.API_URL || 'http://localhost:3000/api/v1/upload';
 const fileCount = parseInt(process.argv[2] || '10', 10);
 const rowsPerFile = parseInt(process.argv[3] || '1000', 10);
+const concurrency = parseInt(process.argv[4] || '1', 10);
 
 console.log('Optimized Bulk Upload Test (Node.js)');
 console.log('=====================================');
 console.log(`Files to upload: ${fileCount}`);
 console.log(`Rows per file: ${rowsPerFile}`);
+console.log(`Concurrency: ${concurrency} (${concurrency === 1 ? 'sequential' : `${concurrency} files at once`})`);
 console.log(`API URL: ${API_URL}`);
 console.log('');
 
@@ -136,24 +140,16 @@ async function uploadFile(filePath) {
   });
 }
 
-// Generate and upload files
-const results = {
-  success: 0,
-  failed: 0,
-  errors: [],
-};
-
-const startTime = Date.now();
-
-console.log('Generating and uploading files...\n');
-
-for (let i = 1; i <= fileCount; i++) {
-  const fileName = `test-file-${i}.csv`;
+/**
+ * Process a single file (generate and upload)
+ */
+async function processFile(fileNumber) {
+  const fileName = `test-file-${fileNumber}.csv`;
   const filePath = join(tempDir, fileName);
   
   try {
     // Generate CSV
-    process.stdout.write(`[${i}/${fileCount}] Generating ${fileName}... `);
+    process.stdout.write(`[${fileNumber}/${fileCount}] Generating ${fileName}... `);
     const genStart = Date.now();
     await generateCSV(filePath, rowsPerFile);
     const genTime = Date.now() - genStart;
@@ -165,27 +161,78 @@ for (let i = 1; i <= fileCount; i++) {
     const result = await uploadFile(filePath);
     const uploadTime = Date.now() - uploadStart;
     
-    if (result.success) {
-      results.success++;
-      const jobId = result.data?.jobId || result.data?.data?.jobId || 'unknown';
-      console.log(`✓ (${uploadTime}ms) Success (Job: ${jobId})`);
-    } else {
-      results.failed++;
-      results.errors.push({ file: fileName, error: result.data });
-      console.log(`✗ Failed: ${result.data.message || result.status}`);
-    }
-    
     // Clean up file
     await fs.unlink(filePath);
+    
+    if (result.success) {
+      const jobId = result.data?.jobId || result.data?.data?.jobId || 'unknown';
+      console.log(`✓ (${uploadTime}ms) Success (Job: ${jobId})`);
+      return { success: true, file: fileName, result };
+    } else {
+      console.log(`✗ Failed: ${result.data.message || result.status}`);
+      return { success: false, file: fileName, error: result.data };
+    }
   } catch (error) {
-    results.failed++;
-    results.errors.push({ file: fileName, error: error.message });
     console.log(`✗ Error: ${error.message}`);
+    // Try to clean up file if it exists
+    try {
+      await fs.unlink(filePath);
+    } catch {}
+    return { success: false, file: fileName, error: error.message };
+  }
+}
+
+/**
+ * Process files with controlled concurrency
+ */
+async function processFilesWithConcurrency(fileCount, concurrency) {
+  const results = {
+    success: 0,
+    failed: 0,
+    errors: [],
+  };
+  
+  // Create array of file numbers to process
+  const fileNumbers = Array.from({ length: fileCount }, (_, i) => i + 1);
+  
+  // Process in batches
+  for (let i = 0; i < fileNumbers.length; i += concurrency) {
+    const batch = fileNumbers.slice(i, i + concurrency);
+    
+    if (concurrency > 1) {
+      console.log(`\n--- Processing batch: files ${batch[0]} to ${batch[batch.length - 1]} ---`);
+    }
+    
+    // Process batch concurrently
+    const batchResults = await Promise.all(
+      batch.map(fileNumber => processFile(fileNumber))
+    );
+    
+    // Aggregate results
+    batchResults.forEach(result => {
+      if (result.success) {
+        results.success++;
+      } else {
+        results.failed++;
+        results.errors.push({ file: result.file, error: result.error });
+      }
+    });
+    
+    // Small delay between batches (not between files in same batch)
+    if (i + concurrency < fileNumbers.length) {
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
   }
   
-  // Small delay to avoid overwhelming the API
-  await new Promise(resolve => setTimeout(resolve, 0));
+  return results;
 }
+
+// Main execution
+const startTime = Date.now();
+
+console.log('Generating and uploading files...\n');
+
+const results = await processFilesWithConcurrency(fileCount, concurrency);
 
 // Clean up temp directory
 try {
@@ -205,10 +252,16 @@ console.log('='.repeat(50));
 console.log(`Total files: ${fileCount}`);
 console.log(`Successful: ${results.success}`);
 console.log(`Failed: ${results.failed}`);
+console.log(`Concurrency: ${concurrency}`);
 console.log(`Time elapsed: ${elapsed}ms (${(elapsed / 1000).toFixed(2)}s)`);
 console.log(`Average time per file: ${(elapsed / fileCount).toFixed(2)}ms`);
 console.log(`Total rows processed: ${totalRows.toLocaleString()}`);
 console.log(`Throughput: ~${rowsPerSecond.toLocaleString()} rows/second`);
+
+if (concurrency > 1) {
+  const speedup = fileCount / (elapsed / 1000) / (fileCount / (elapsed / concurrency / 1000));
+  console.log(`Speedup factor: ~${speedup.toFixed(2)}x vs sequential`);
+}
 
 if (results.errors.length > 0) {
   console.log('\nErrors:');

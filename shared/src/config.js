@@ -33,9 +33,9 @@ export function getConfig() {
       dlqTopic: process.env.KAFKA_DLQ_TOPIC || 'csv.ingestion.dlq',
       consumerGroupId: process.env.KAFKA_CONSUMER_GROUP_ID || 'csv-ingestion-workers',
       ingestionPartitions: parseInt(process.env.KAFKA_INGESTION_PARTITIONS || '6', 10),
-      ingestionReplicationFactor: parseInt(process.env.KAFKA_INGESTION_REPLICATION_FACTOR || '1', 10),
+      ingestionReplicationFactor: parseInt(process.env.KAFKA_INGESTION_REPLICATION_FACTOR || '3', 10),
       dlqPartitions: parseInt(process.env.KAFKA_DLQ_PARTITIONS || '3', 10),
-      dlqReplicationFactor: parseInt(process.env.KAFKA_DLQ_REPLICATION_FACTOR || '1', 10),
+      dlqReplicationFactor: parseInt(process.env.KAFKA_DLQ_REPLICATION_FACTOR || '3', 10),
     },
     mongodb: {
       uri: process.env.MONGODB_URI || 'mongodb://localhost:27017',

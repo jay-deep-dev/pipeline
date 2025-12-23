@@ -1,4 +1,3 @@
-
 services:
   # Zookeeper for Kafka
   zookeeper:
@@ -21,40 +20,113 @@ services:
       timeout: 5s
       retries: 10
 
-  # Kafka Broker
+  # Kafka Broker 1
   kafka:
     image: confluentinc/cp-kafka:7.5.3
     depends_on:
-      - zookeeper
+      zookeeper:
+        condition: service_healthy
     ports:
      - "9092:9092"
      - "29092:29092"
     env_file:
       - .env.docker
     environment:
-      KAFKA_BROKER_ID: ${KAFKA_BROKER_ID:-1}
+      KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: ${KAFKA_ZOOKEEPER_CONNECT:-zookeeper:2181}
-
-      KAFKA_LISTENERS: ${KAFKA_LISTENERS:-INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:29092}
-
-      KAFKA_ADVERTISED_LISTENERS: ${KAFKA_ADVERTISED_LISTENERS:-INTERNAL://kafka:9092,EXTERNAL://localhost:29092}
-
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: ${KAFKA_LISTENER_SECURITY_PROTOCOL_MAP:-INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT}
-
-      KAFKA_INTER_BROKER_LISTENER_NAME: ${KAFKA_INTER_BROKER_LISTENER_NAME:-INTERNAL}
-
-      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: ${KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR:-1}
-      # In production we do NOT rely on auto topic creation
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9092,EXTERNAL://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: ${KAFKA_AUTO_CREATE_TOPICS_ENABLE:-false}
       KAFKA_LOG_RETENTION_HOURS: ${KAFKA_LOG_RETENTION_HOURS:-168}
       KAFKA_LOG_SEGMENT_BYTES: ${KAFKA_LOG_SEGMENT_BYTES:-1073741824}
       KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS: ${KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS:-300000}
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+      KAFKA_MIN_INSYNC_REPLICAS: 2
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
     networks:
       - csv-pipeline-network
     volumes:
-      - kafka-data:/var/lib/kafka/data
+      - kafka-data-1:/var/lib/kafka/data
     healthcheck:
       test: ["CMD", "bash", "-c", "kafka-topics --bootstrap-server localhost:9092 --list"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Kafka Broker 2
+  kafka2:
+    image: confluentinc/cp-kafka:7.5.3
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+     - "9093:9093"
+     - "29093:29093"
+    env_file:
+      - .env.docker
+    environment:
+      KAFKA_BROKER_ID: 2
+      KAFKA_ZOOKEEPER_CONNECT: ${KAFKA_ZOOKEEPER_CONNECT:-zookeeper:2181}
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9093,EXTERNAL://0.0.0.0:29093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka2:9093,EXTERNAL://localhost:29093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: ${KAFKA_AUTO_CREATE_TOPICS_ENABLE:-false}
+      KAFKA_LOG_RETENTION_HOURS: ${KAFKA_LOG_RETENTION_HOURS:-168}
+      KAFKA_LOG_SEGMENT_BYTES: ${KAFKA_LOG_SEGMENT_BYTES:-1073741824}
+      KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS: ${KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS:-300000}
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+      KAFKA_MIN_INSYNC_REPLICAS: 2
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+    networks:
+      - csv-pipeline-network
+    volumes:
+      - kafka-data-2:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "bash", "-c", "kafka-topics --bootstrap-server localhost:9093 --list"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Kafka Broker 3
+  kafka3:
+    image: confluentinc/cp-kafka:7.5.3
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+     - "9094:9094"
+     - "29094:29094"
+    env_file:
+      - .env.docker
+    environment:
+      KAFKA_BROKER_ID: 3
+      KAFKA_ZOOKEEPER_CONNECT: ${KAFKA_ZOOKEEPER_CONNECT:-zookeeper:2181}
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9094,EXTERNAL://0.0.0.0:29094
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka3:9094,EXTERNAL://localhost:29094
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 3
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: ${KAFKA_AUTO_CREATE_TOPICS_ENABLE:-false}
+      KAFKA_LOG_RETENTION_HOURS: ${KAFKA_LOG_RETENTION_HOURS:-168}
+      KAFKA_LOG_SEGMENT_BYTES: ${KAFKA_LOG_SEGMENT_BYTES:-1073741824}
+      KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS: ${KAFKA_LOG_RETENTION_CHECK_INTERVAL_MS:-300000}
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 3
+      KAFKA_MIN_INSYNC_REPLICAS: 2
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 3
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 2
+    networks:
+      - csv-pipeline-network
+    volumes:
+      - kafka-data-3:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "bash", "-c", "kafka-topics --bootstrap-server localhost:9094 --list"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -89,7 +161,7 @@ services:
     env_file:
       - .env.docker
     environment:
-      KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092}
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092,kafka2:9093,kafka3:9094}
       KAFKA_CLIENT_ID: ${KAFKA_CLIENT_ID:-ingestion-api}
       KAFKA_INGESTION_TOPIC: ${KAFKA_INGESTION_TOPIC:-csv.ingestion}
       KAFKA_DLQ_TOPIC: ${KAFKA_DLQ_TOPIC:-csv.ingestion.dlq}
@@ -105,6 +177,10 @@ services:
       zookeeper:
         condition: service_healthy
       kafka:
+        condition: service_healthy
+      kafka2:
+        condition: service_healthy
+      kafka3:
         condition: service_healthy
       mongodb:
         condition: service_healthy
@@ -125,7 +201,7 @@ services:
     env_file:
       - .env.docker
     environment:
-      KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092}
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092,kafka2:9093,kafka3:9094}
       KAFKA_CLIENT_ID: ${KAFKA_CLIENT_ID:-csv-worker}
       KAFKA_INGESTION_TOPIC: ${KAFKA_INGESTION_TOPIC:-csv.ingestion}
       KAFKA_DLQ_TOPIC: ${KAFKA_DLQ_TOPIC:-csv.ingestion.dlq}
@@ -142,6 +218,10 @@ services:
       - ./uploads:/app/uploads
     depends_on:
       kafka:
+        condition: service_healthy
+      kafka2:
+        condition: service_healthy
+      kafka3:
         condition: service_healthy
       mongodb:
         condition: service_healthy
@@ -160,7 +240,7 @@ services:
     env_file:
       - .env.docker
     environment:
-      KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092}
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092,kafka2:9093,kafka3:9094}
       KAFKA_CLIENT_ID: ${KAFKA_CLIENT_ID:-dlq-handler}
       KAFKA_DLQ_TOPIC: ${KAFKA_DLQ_TOPIC:-csv.ingestion.dlq}
       MONGODB_URI: ${MONGODB_URI:-mongodb://mongodb:27017}
@@ -168,6 +248,10 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
     depends_on:
       kafka:
+        condition: service_healthy
+      kafka2:
+        condition: service_healthy
+      kafka3:
         condition: service_healthy
       mongodb:
         condition: service_healthy
@@ -180,7 +264,9 @@ networks:
     driver: bridge
 
 volumes:
-  kafka-data:
+  kafka-data-1:
+  kafka-data-2:
+  kafka-data-3:
   mongodb-data:
   zookeeper-data:
   zookeeper-log:
