@@ -2,7 +2,7 @@
  * Dead Letter Queue Handler
  * 
  * Separate service to handle messages from the Dead Letter Queue (DLQ).
- * Processes failed jobs, logs errors, and optionally retries or archives them.
+ * Processes failed jobs, logs errors, and stores them in MongoDB for analysis.
  * 
  * @module dlq-handler
  */
@@ -10,21 +10,23 @@
 import { Kafka } from 'kafkajs';
 import { getConfig, createLogger } from '../../shared/index.js';
 import { ensureKafkaTopics } from '../../shared/src/kafka-admin.js';
+import { getMongoDBClient } from './mongodb-client.js';
 
 const config = getConfig();
 const logger = createLogger('dlq-handler', config.logging.level);
 
 /**
  * DLQ Handler Service
- * Consumes messages from DLQ and handles them appropriately
+ * Consumes messages from DLQ and stores them in MongoDB
  */
 class DLQHandler {
   constructor() {
     this.kafka = new Kafka({
-      clientId: config.kafka.clientId + '-dlq-handler',
+      clientId: `${config.kafka.clientId}-dlq-handler`,
       brokers: config.kafka.brokers,
     });
     this.consumer = null;
+    this.mongoClient = null;
     this.isRunning = false;
   }
 
@@ -34,8 +36,16 @@ class DLQHandler {
    */
   async connect() {
     try {
+      // Connect to MongoDB
+      this.mongoClient = getMongoDBClient();
+      await this.mongoClient.connect();
+
+      // Determine DLQ topic based on environment
+      // This handler can process both file-ingestion-dlq and validated-chunks-dlq
+      const dlqTopic = process.env.KAFKA_DLQ_TOPIC || config.kafka.fileIngestionDlqTopic || config.kafka.validatedChunksDlqTopic;
+
       this.consumer = this.kafka.consumer({
-        groupId: config.kafka.consumerGroupId + '-dlq',
+        groupId: `${config.kafka.clientId}-dlq-handler`,
         sessionTimeout: 30000,
         heartbeatInterval: 3000,
       });
@@ -43,17 +53,17 @@ class DLQHandler {
       await this.consumer.connect();
       logger.info('DLQ handler connected to Kafka', {
         brokers: config.kafka.brokers,
-        topic: config.kafka.dlqTopic,
+        topic: dlqTopic,
       });
 
       // Subscribe to DLQ topic
       await this.consumer.subscribe({
-        topic: config.kafka.dlqTopic,
+        topic: dlqTopic,
         fromBeginning: false,
       });
 
       logger.info('Subscribed to DLQ topic', {
-        topic: config.kafka.dlqTopic,
+        topic: dlqTopic,
       });
     } catch (error) {
       logger.error('Failed to connect DLQ handler', {
@@ -73,6 +83,9 @@ class DLQHandler {
         await this.consumer.disconnect();
         logger.info('DLQ handler disconnected');
       }
+      if (this.mongoClient) {
+        await this.mongoClient.disconnect();
+      }
     } catch (error) {
       logger.error('Error disconnecting DLQ handler', {
         error: error.message,
@@ -82,11 +95,7 @@ class DLQHandler {
 
   /**
    * Process DLQ message
-   * Logs error details and can be extended to:
-   * - Store failed jobs in a database
-   * - Send alerts/notifications
-   * - Attempt manual retry
-   * - Archive for analysis
+   * Stores failed jobs in MongoDB for analysis and monitoring
    * 
    * @param {Object} dlqMessage - DLQ message
    * @returns {Promise<void>}
@@ -103,21 +112,36 @@ class DLQHandler {
         timestamp: new Date(dlqMessage.timestamp).toISOString(),
       });
 
-      // Log detailed error information
-      if (dlqMessage.errorDetails) {
-        logger.error('DLQ error details', {
-          jobId: dlqMessage.jobId,
-          errorDetails: dlqMessage.errorDetails,
-        });
-      }
+      // Store failed job in MongoDB for analysis
+      const failedJob = {
+        jobId: dlqMessage.jobId,
+        fileId: dlqMessage.fileId,
+        fileName: dlqMessage.fileName,
+        filePath: dlqMessage.filePath,
+        errorCode: dlqMessage.errorCode,
+        errorMessage: dlqMessage.errorMessage,
+        errorDetails: dlqMessage.errorDetails || {},
+        retryCount: dlqMessage.retryCount || 0,
+        originalMessage: dlqMessage.originalMessage || null,
+        createdAt: new Date(dlqMessage.timestamp),
+        processedAt: new Date(),
+      };
 
-      // In a production system, you might want to:
-      // 1. Store failed job in a database for analysis
-      // 2. Send alert/notification to administrators
-      // 3. Attempt automatic retry for transient errors
-      // 4. Archive file for manual review
+      // Store in jobs collection with failed status
+      const jobsCollection = this.mongoClient.getJobsCollection();
+      await jobsCollection.updateOne(
+        { jobId: dlqMessage.jobId },
+        {
+          $set: {
+            ...failedJob,
+            status: 'FAILED',
+            updatedAt: new Date(),
+          },
+        },
+        { upsert: true }
+      );
 
-      logger.info('DLQ message processed', {
+      logger.info('DLQ message stored in MongoDB', {
         jobId: dlqMessage.jobId,
         fileId: dlqMessage.fileId,
       });
@@ -125,6 +149,7 @@ class DLQHandler {
       logger.error('Error processing DLQ message', {
         jobId: dlqMessage?.jobId,
         error: error.message,
+        stack: error.stack,
       });
     }
   }
@@ -212,14 +237,14 @@ process.on('SIGINT', shutdown);
  */
 async function start() {
   try {
+    const dlqTopic = process.env.KAFKA_DLQ_TOPIC || config.kafka.fileIngestionDlqTopic || config.kafka.validatedChunksDlqTopic;
+    
     logger.info('Starting DLQ handler service...', {
       kafkaBrokers: config.kafka.brokers,
-      dlqTopic: config.kafka.dlqTopic,
+      dlqTopic,
     });
 
-    // Ensure DLQ topic exists with the configured partitions/replication.
-    // This mirrors the ingestion API and worker behavior and avoids relying
-    // on broker-side auto topic creation in production.
+    // Ensure DLQ topic exists
     await ensureKafkaTopics();
 
     const handler = new DLQHandler();
@@ -240,4 +265,3 @@ async function start() {
 start();
 
 export default start;
-

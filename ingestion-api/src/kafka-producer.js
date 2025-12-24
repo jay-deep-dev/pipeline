@@ -9,7 +9,7 @@
 
 import { Kafka } from 'kafkajs';
 import { getConfig, createLogger } from '../../shared/index.js';
-import { createIngestionJobMessage } from '../../shared/src/kafka-schemas.js';
+import { createFileIngestionMessage } from '../../shared/src/kafka-schemas.js';
 
 const config = getConfig();
 const logger = createLogger('kafka-producer', config.logging.level);
@@ -48,7 +48,7 @@ class KafkaProducer {
       await this.producer.connect();
       logger.info('Kafka producer connected', {
         brokers: config.kafka.brokers,
-        topic: config.kafka.ingestionTopic,
+        topic: config.kafka.fileIngestionTopic,
       });
     } catch (error) {
       logger.error('Failed to connect Kafka producer', {
@@ -96,12 +96,12 @@ class KafkaProducer {
     }
 
     try {
-      const message = createIngestionJobMessage(jobData);
+      const message = createFileIngestionMessage(jobData);
 
       // Use fileId as partition key for consistent partitioning
       // This ensures all messages for the same file go to the same partition
       await this.producer.send({
-        topic: config.kafka.ingestionTopic,
+        topic: config.kafka.fileIngestionTopic,
         messages: [
           {
             key: jobData.fileId,
@@ -115,11 +115,11 @@ class KafkaProducer {
         ],
       });
 
-      logger.info('Ingestion job message produced to Kafka', {
+      logger.info('File ingestion message produced to Kafka', {
         jobId: jobData.jobId,
         fileId: jobData.fileId,
         fileName: jobData.fileName,
-        topic: config.kafka.ingestionTopic,
+        topic: config.kafka.fileIngestionTopic,
       });
     } catch (error) {
       logger.error('Failed to produce ingestion job message', {
@@ -147,7 +147,7 @@ class KafkaProducer {
       const message = createDLQMessage(dlqData);
 
       await this.producer.send({
-        topic: config.kafka.dlqTopic,
+        topic: config.kafka.fileIngestionDlqTopic,
         messages: [
           {
             key: dlqData.fileId,

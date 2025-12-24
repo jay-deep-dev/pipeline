@@ -17,9 +17,14 @@ export {
   ValidationError,
 } from './src/validation.js';
 export {
-  createIngestionJobMessage,
+  createFileIngestionMessage,
+  createValidatedChunkMessage,
+  createIngestionJobMessage, // Legacy
   createDLQMessage,
-  validateIngestionJobMessage,
+  validateFileIngestionMessage,
+  validateValidatedChunkMessage,
+  validateIngestionJobMessage, // Legacy
 } from './src/kafka-schemas.js';
 export { createStorage } from './src/storage.js';
+export { validateRow, validateBatch, getValidationStats } from './src/row-validation.js';
 

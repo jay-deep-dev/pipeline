@@ -1,29 +1,27 @@
 /**
- * Kafka Consumer Module
+ * Kafka Consumer Module for Validation Service
  * 
- * Consumes ingestion job messages from Kafka and processes CSV files.
- * Handles message consumption, processing, and error handling with DLQ support.
+ * Consumes file-ingestion messages from Kafka, validates CSV rows,
+ * chunks them, and produces validated-chunks messages.
  * 
  * @module kafka-consumer
  */
 
 import { Kafka } from 'kafkajs';
-import { getConfig, createLogger, validateValidatedChunkMessage } from '../../shared/index.js';
-import { processChunk } from './chunk-processor.js';
-import { createDLQMessage } from '../../shared/src/kafka-schemas.js';
+import { getConfig, createLogger, validateFileIngestionMessage } from '../../shared/index.js';
+import { createValidatedChunkMessage, createDLQMessage } from '../../shared/src/kafka-schemas.js';
+import { validateAndChunkFile } from './csv-validator.js';
 
 const config = getConfig();
-const logger = createLogger('kafka-consumer', config.logging.level);
-import os from 'os';
+const logger = createLogger('validation-consumer', config.logging.level);
 
 /**
- * Kafka Consumer Service
- * Manages Kafka consumption and message processing
+ * Kafka Consumer Service for Validation
  */
-class KafkaConsumer {
+class ValidationKafkaConsumer {
   constructor() {
     this.kafka = new Kafka({
-      clientId: config.kafka.clientId,
+      clientId: `${config.kafka.clientId}-validation`,
       brokers: config.kafka.brokers,
       retry: {
         retries: 5,
@@ -33,53 +31,54 @@ class KafkaConsumer {
       },
     });
     this.consumer = null;
-    this.producer = null; // For DLQ messages
+    this.producer = null; // For validated-chunks and DLQ
     this.isRunning = false;
-    this.processingJobs = new Set(); // Track currently processing jobs
+    this.processingFiles = new Set(); // Track currently processing files
   }
 
   /**
-   * Initialize Kafka consumer and producer (for DLQ)
+   * Initialize Kafka consumer and producer
    * @returns {Promise<void>}
    */
   async connect() {
     try {
       // Create consumer
       this.consumer = this.kafka.consumer({
-        groupId: config.kafka.dbIngestionConsumerGroupId,
-        maxPollIntervalMs: 600000,
+        groupId: config.kafka.validationConsumerGroupId,
+        maxPollIntervalMs: 600000, // 10 minutes for large files
         sessionTimeout: 30000,
         heartbeatInterval: 3000,
         maxBytesPerPartition: 10485760, // 10MB
         minBytes: 1,
         maxBytes: 10485760,
-        maxWaitTimeInMs: config.dbIngestion.pollIntervalMs,
+        maxWaitTimeInMs: config.validation.pollIntervalMs,
       });
 
       await this.consumer.connect();
       logger.info('Kafka consumer connected', {
         brokers: config.kafka.brokers,
-        groupId: config.kafka.dbIngestionConsumerGroupId,
-        topic: config.kafka.validatedChunksTopic,
+        groupId: config.kafka.validationConsumerGroupId,
+        topic: config.kafka.fileIngestionTopic,
       });
 
-      // Create producer for DLQ messages
+      // Create producer for validated-chunks and DLQ
       this.producer = this.kafka.producer({
         maxInFlightRequests: 5,
         idempotent: true,
+        transactionTimeout: 30000,
       });
 
       await this.producer.connect();
-      logger.info('Kafka producer (DLQ) connected');
+      logger.info('Kafka producer (validated-chunks) connected');
 
-      // Subscribe to validated-chunks topic
+      // Subscribe to file-ingestion topic
       await this.consumer.subscribe({
-        topic: config.kafka.validatedChunksTopic,
+        topic: config.kafka.fileIngestionTopic,
         fromBeginning: false, // Only consume new messages
       });
 
       logger.info('Subscribed to Kafka topic', {
-        topic: config.kafka.validatedChunksTopic,
+        topic: config.kafka.fileIngestionTopic,
       });
     } catch (error) {
       logger.error('Failed to connect Kafka consumer', {
@@ -105,7 +104,7 @@ class KafkaConsumer {
 
       if (this.producer) {
         await this.producer.disconnect();
-        logger.info('Kafka producer (DLQ) disconnected');
+        logger.info('Kafka producer disconnected');
       }
     } catch (error) {
       logger.error('Error disconnecting Kafka consumer', {
@@ -116,33 +115,33 @@ class KafkaConsumer {
 
   /**
    * Send message to Dead Letter Queue
-   * @param {Object} jobMessage - Original job message
+   * @param {Object} fileMessage - Original file message
    * @param {Error} error - Error that occurred
    * @param {number} retryCount - Number of retry attempts
    * @returns {Promise<void>}
    */
-  async sendToDLQ(jobMessage, error, retryCount = 0) {
+  async sendToDLQ(fileMessage, error, retryCount = 0) {
     try {
       const dlqMessage = createDLQMessage({
-        jobId: jobMessage.jobId,
-        fileId: jobMessage.fileId,
-        fileName: jobMessage.fileName,
-        filePath: jobMessage.filePath,
-        errorCode: error.code || 'PROCESSING_ERROR',
+        jobId: fileMessage.jobId,
+        fileId: fileMessage.fileId,
+        fileName: fileMessage.fileName,
+        filePath: fileMessage.filePath,
+        errorCode: error.code || 'VALIDATION_ERROR',
         errorMessage: error.message,
         errorDetails: {
           stack: error.stack,
           ...error.details,
         },
         retryCount,
-        originalMessage: jobMessage,
+        originalMessage: fileMessage,
       });
 
       await this.producer.send({
-        topic: config.kafka.validatedChunksDlqTopic,
+        topic: config.kafka.fileIngestionDlqTopic,
         messages: [
           {
-            key: jobMessage.fileId,
+            key: fileMessage.fileId,
             value: JSON.stringify(dlqMessage),
             headers: {
               'content-type': 'application/json',
@@ -153,106 +152,84 @@ class KafkaConsumer {
       });
 
       logger.info('Message sent to DLQ', {
-        jobId: jobMessage.jobId,
-        fileId: jobMessage.fileId,
+        jobId: fileMessage.jobId,
+        fileId: fileMessage.fileId,
         errorCode: dlqMessage.errorCode,
         retryCount,
       });
     } catch (dlqError) {
       logger.error('Failed to send message to DLQ', {
-        jobId: jobMessage.jobId,
+        jobId: fileMessage.jobId,
         error: dlqError.message,
       });
-      // Don't throw - we've already failed, just log the DLQ failure
     }
   }
 
   /**
-   * Process a single validated chunk message
+   * Process a single file ingestion message
    * @param {Object} message - Kafka message
    * @returns {Promise<void>}
    */
   async processMessage(message) {
-    let chunkMessage = null;
+    let fileMessage = null;
 
     try {
       // Parse message
       const messageValue = JSON.parse(message.value.toString());
-      chunkMessage = messageValue;
+      fileMessage = messageValue;
 
-      const WORKER_ID = `${os.hostname()}-${process.pid}`;
-
-      // Log the worker, partition, offset, and chunk info
-      logger.info('Consuming validated chunk message', {
-        workerId: WORKER_ID,
+      logger.info('Consuming file ingestion message', {
         topic: message.topic,
         partition: message.partition,
         offset: message.offset,
-        jobId: chunkMessage.jobId,
-        fileId: chunkMessage.fileId,
-        chunkId: chunkMessage.chunkId,
-        chunkNumber: chunkMessage.chunkNumber,
+        jobId: fileMessage.jobId,
+        fileId: fileMessage.fileId,
       });
 
       // Validate message structure
-      validateValidatedChunkMessage(chunkMessage);
+      validateFileIngestionMessage(fileMessage);
 
-      // Check if chunk is already being processed (idempotency)
-      const chunkKey = `${chunkMessage.jobId}-${chunkMessage.chunkId}`;
-      if (this.processingJobs.has(chunkKey)) {
-        logger.warn('Chunk already being processed, skipping', {
-          jobId: chunkMessage.jobId,
-          fileId: chunkMessage.fileId,
-          chunkId: chunkMessage.chunkId,
+      // Check if file is already being processed (idempotency)
+      if (this.processingFiles.has(fileMessage.fileId)) {
+        logger.warn('File already being processed, skipping', {
+          jobId: fileMessage.jobId,
+          fileId: fileMessage.fileId,
         });
         return;
       }
 
-      this.processingJobs.add(chunkKey);
+      this.processingFiles.add(fileMessage.fileId);
 
-      logger.info('Processing validated chunk', {
-        jobId: chunkMessage.jobId,
-        fileId: chunkMessage.fileId,
-        chunkId: chunkMessage.chunkId,
-        chunkNumber: chunkMessage.chunkNumber,
-        validRowsCount: chunkMessage.validRows.length,
-        invalidRowsCount: chunkMessage.invalidRows.length,
+      logger.info('Processing file for validation', {
+        jobId: fileMessage.jobId,
+        fileId: fileMessage.fileId,
+        fileName: fileMessage.fileName,
+        estimatedRowCount: fileMessage.estimatedRowCount,
       });
 
-      // Process chunk (insert to MongoDB)
-      const result = await processChunk(chunkMessage);
+      // Validate and chunk CSV file
+      await validateAndChunkFile(fileMessage, this.producer);
 
-      if (result.success) {
-        logger.info('Chunk processed successfully', {
-          jobId: chunkMessage.jobId,
-          fileId: chunkMessage.fileId,
-          chunkId: chunkMessage.chunkId,
-          chunkNumber: chunkMessage.chunkNumber,
-          validInserted: result.validInserted,
-          invalidInserted: result.invalidInserted,
-          processingTimeMs: result.processingTimeMs,
-        });
-      } else {
-        throw new Error('Chunk processing completed with errors');
-      }
+      logger.info('File validation and chunking completed', {
+        jobId: fileMessage.jobId,
+        fileId: fileMessage.fileId,
+      });
     } catch (error) {
-      logger.error('Failed to process validated chunk', {
-        jobId: chunkMessage?.jobId,
-        fileId: chunkMessage?.fileId,
-        chunkId: chunkMessage?.chunkId,
+      logger.error('Failed to process file ingestion message', {
+        jobId: fileMessage?.jobId,
+        fileId: fileMessage?.fileId,
         error: error.message,
         stack: error.stack,
       });
 
-      // Send to DLQ if we have a valid chunk message
-      if (chunkMessage) {
-        await this.sendToDLQ(chunkMessage, error, 0);
+      // Send to DLQ if we have a valid file message
+      if (fileMessage) {
+        await this.sendToDLQ(fileMessage, error, 0);
       }
     } finally {
       // Remove from processing set
-      if (chunkMessage) {
-        const chunkKey = `${chunkMessage.jobId}-${chunkMessage.chunkId}`;
-        this.processingJobs.delete(chunkKey);
+      if (fileMessage) {
+        this.processingFiles.delete(fileMessage.fileId);
       }
     }
   }
@@ -311,7 +288,6 @@ class KafkaConsumer {
         },
       });
 
-
       logger.info('Kafka consumer started');
     } catch (error) {
       this.isRunning = false;
@@ -329,7 +305,6 @@ class KafkaConsumer {
   async stop() {
     this.isRunning = false;
     logger.info('Stopping Kafka consumer...');
-    // Consumer will stop on next iteration
   }
 }
 
@@ -338,24 +313,13 @@ let consumerInstance = null;
 
 /**
  * Get or create Kafka consumer instance
- * @returns {KafkaConsumer} Consumer instance
+ * @returns {ValidationKafkaConsumer} Consumer instance
  */
 export function getKafkaConsumer() {
   if (!consumerInstance) {
-    consumerInstance = new KafkaConsumer();
+    consumerInstance = new ValidationKafkaConsumer();
   }
   return consumerInstance;
-}
-
-/**
- * Get Kafka producer instance (for DLQ)
- * @returns {Object} Producer instance
- */
-export function getKafkaProducer() {
-  if (!consumerInstance || !consumerInstance.producer) {
-    throw new Error('Kafka producer not initialized');
-  }
-  return consumerInstance.producer;
 }
 
 export default getKafkaConsumer;

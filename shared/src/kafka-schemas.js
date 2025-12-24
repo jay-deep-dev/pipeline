@@ -8,10 +8,10 @@
  */
 
 /**
- * Ingestion job metadata message schema
- * Sent to csv.ingestion topic after successful validation
+ * File ingestion job message schema
+ * Sent to file-ingestion topic after file upload
  * 
- * @typedef {Object} IngestionJobMessage
+ * @typedef {Object} FileIngestionMessage
  * @property {string} jobId - Unique job identifier (UUID)
  * @property {string} fileId - Unique file identifier (UUID)
  * @property {string} fileName - Original filename
@@ -20,12 +20,36 @@
  * @property {string[]} headers - CSV column headers
  * @property {number} estimatedRowCount - Estimated number of rows (may be sampled)
  * @property {number} timestamp - Unix timestamp when job was created
- * @property {string} status - Job status (e.g., 'pending', 'processing', 'completed', 'failed')
+ * @property {string} status - Job status (e.g., 'UPLOADED', 'VALIDATING', 'COMPLETED', 'FAILED')
  * @property {Object} metadata - Additional metadata (optional)
  */
 
 /**
- * Create an ingestion job message
+ * Validated chunk message schema
+ * Sent to validated-chunks topic after row validation
+ * 
+ * @typedef {Object} ValidatedChunkMessage
+ * @property {string} jobId - Unique job identifier (UUID)
+ * @property {string} fileId - Unique file identifier (UUID)
+ * @property {string} chunkId - Unique chunk identifier (UUID)
+ * @property {number} chunkNumber - Chunk sequence number (1-indexed)
+ * @property {number} totalChunks - Total number of chunks for this file
+ * @property {Object[]} validRows - Array of validated row objects
+ * @property {Object[]} invalidRows - Array of invalid row objects with error messages
+ * @property {number} startRowNumber - Starting row number (1-indexed)
+ * @property {number} endRowNumber - Ending row number (1-indexed)
+ * @property {number} timestamp - Unix timestamp when chunk was created
+ * @property {string} status - Chunk status (e.g., 'VALIDATED', 'PROCESSING', 'COMPLETED', 'FAILED')
+ */
+
+/**
+ * Legacy ingestion job metadata message schema
+ * @deprecated Use FileIngestionMessage instead
+ * @typedef {Object} IngestionJobMessage
+ */
+
+/**
+ * Create a file ingestion message
  * @param {Object} params - Message parameters
  * @param {string} params.jobId - Unique job identifier
  * @param {string} params.fileId - Unique file identifier
@@ -35,9 +59,9 @@
  * @param {string[]} params.headers - CSV column headers
  * @param {number} params.estimatedRowCount - Estimated row count
  * @param {Object} [params.metadata] - Additional metadata
- * @returns {IngestionJobMessage} Formatted message object
+ * @returns {FileIngestionMessage} Formatted message object
  */
-export function createIngestionJobMessage({
+export function createFileIngestionMessage({
   jobId,
   fileId,
   fileName,
@@ -56,9 +80,59 @@ export function createIngestionJobMessage({
     headers,
     estimatedRowCount,
     timestamp: Date.now(),
-    status: 'pending',
+    status: 'UPLOADED',
     metadata,
   };
+}
+
+/**
+ * Create a validated chunk message
+ * @param {Object} params - Message parameters
+ * @param {string} params.jobId - Unique job identifier
+ * @param {string} params.fileId - Unique file identifier
+ * @param {string} params.chunkId - Unique chunk identifier
+ * @param {number} params.chunkNumber - Chunk sequence number
+ * @param {number} params.totalChunks - Total number of chunks
+ * @param {Object[]} params.validRows - Array of validated rows
+ * @param {Object[]} params.invalidRows - Array of invalid rows
+ * @param {number} params.startRowNumber - Starting row number
+ * @param {number} params.endRowNumber - Ending row number
+ * @returns {ValidatedChunkMessage} Formatted message object
+ */
+export function createValidatedChunkMessage({
+  jobId,
+  fileId,
+  chunkId,
+  chunkNumber,
+  totalChunks,
+  validRows,
+  invalidRows,
+  startRowNumber,
+  endRowNumber,
+}) {
+  return {
+    jobId,
+    fileId,
+    chunkId,
+    chunkNumber,
+    totalChunks,
+    validRows: validRows || [],
+    invalidRows: invalidRows || [],
+    startRowNumber,
+    endRowNumber,
+    timestamp: Date.now(),
+    status: 'VALIDATED',
+  };
+}
+
+/**
+ * Create an ingestion job message (legacy)
+ * @deprecated Use createFileIngestionMessage instead
+ * @param {Object} params - Message parameters
+ * @returns {IngestionJobMessage} Formatted message object
+ */
+export function createIngestionJobMessage(params) {
+  return createFileIngestionMessage(params);
 }
 
 /**
@@ -118,12 +192,12 @@ export function createDLQMessage({
 }
 
 /**
- * Validate ingestion job message structure
+ * Validate file ingestion message structure
  * @param {Object} message - Message to validate
  * @returns {boolean} True if valid
  * @throws {Error} If message is invalid
  */
-export function validateIngestionJobMessage(message) {
+export function validateFileIngestionMessage(message) {
   const requiredFields = [
     'jobId',
     'fileId',
@@ -151,5 +225,58 @@ export function validateIngestionJobMessage(message) {
   }
 
   return true;
+}
+
+/**
+ * Validate validated chunk message structure
+ * @param {Object} message - Message to validate
+ * @returns {boolean} True if valid
+ * @throws {Error} If message is invalid
+ */
+export function validateValidatedChunkMessage(message) {
+  const requiredFields = [
+    'jobId',
+    'fileId',
+    'chunkId',
+    'chunkNumber',
+    'totalChunks',
+    'validRows',
+    'invalidRows',
+    'startRowNumber',
+    'endRowNumber',
+    'timestamp',
+    'status',
+  ];
+
+  for (const field of requiredFields) {
+    if (!(field in message)) {
+      throw new Error(`Missing required field: ${field}`);
+    }
+  }
+
+  if (!Array.isArray(message.validRows)) {
+    throw new Error('validRows must be an array');
+  }
+
+  if (!Array.isArray(message.invalidRows)) {
+    throw new Error('invalidRows must be an array');
+  }
+
+  if (typeof message.chunkNumber !== 'number' || message.chunkNumber < 1) {
+    throw new Error('chunkNumber must be a positive number');
+  }
+
+  return true;
+}
+
+/**
+ * Validate ingestion job message structure (legacy)
+ * @deprecated Use validateFileIngestionMessage instead
+ * @param {Object} message - Message to validate
+ * @returns {boolean} True if valid
+ * @throws {Error} If message is invalid
+ */
+export function validateIngestionJobMessage(message) {
+  return validateFileIngestionMessage(message);
 }
 

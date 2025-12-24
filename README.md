@@ -4,18 +4,20 @@ A scalable, high-performance data ingestion pipeline designed to handle large-sc
 
 ## 🏗️ Architecture Overview
 
-The pipeline consists of three main components:
+The pipeline uses a **two-stage architecture** for optimal performance and scalability:
 
-1. **Ingestion API Service** - Handles file uploads, performs validation, and produces Kafka events
-2. **Worker Service** - Consumes Kafka events, streams CSV files, and performs batch inserts into MongoDB
-3. **DLQ Handler Service** - Processes failed jobs from the Dead Letter Queue
+1. **Ingestion API Service** - Handles file uploads (up to 100 files), performs basic validation, and produces Kafka events
+2. **Validation Service** - Consumes file events, validates CSV rows, chunks data, and produces validated chunks
+3. **DB Ingestion Service** - Consumes validated chunks and inserts into MongoDB (valid rows → csv_records, invalid rows → error_records)
+4. **DLQ Handler Service** - Processes failed jobs from Dead Letter Queues
 
 ### Architecture Diagram
 
 ```
 ┌─────────────┐
 │   Client    │
-│  (Upload)   │
+│ (Upload 100 │
+│   files)    │
 └──────┬──────┘
        │
        ▼
@@ -23,11 +25,11 @@ The pipeline consists of three main components:
 │      Ingestion API Service          │
 │  ┌───────────────────────────────┐  │
 │  │ 1. File Upload (Multer)      │  │
-│  │ 2. Validation                │  │
+│  │ 2. Basic Validation          │  │
 │  │    - File Size               │  │
 │  │    - File Type              │  │
-│  │    - CSV Format             │  │
 │  │ 3. Kafka Producer           │  │
+│  │    → file-ingestion topic   │  │
 │  └───────────────────────────────┘  │
 └──────────────┬──────────────────────┘
                │
@@ -35,43 +37,66 @@ The pipeline consists of three main components:
         ┌──────────┐
         │  Kafka   │
         │ (Topic:  │
-        │csv.ingestion)│
+        │file-ingestion)│
         └────┬─────┘
              │
              ▼
 ┌─────────────────────────────────────┐
-│        Worker Service               │
+│     Validation Service              │
 │  ┌───────────────────────────────┐  │
 │  │ 1. Kafka Consumer            │  │
 │  │ 2. CSV Streaming Parser      │  │
-│  │ 3. Batch Processing          │  │
-│  │ 4. MongoDB Bulk Insert       │  │
+│  │ 3. Row Validation            │  │
+│  │    (id, name, email, date)   │  │
+│  │ 4. Chunking (5k rows)        │  │
+│  │ 5. Kafka Producer            │  │
+│  │    → validated-chunks topic  │  │
+│  └───────────────────────────────┘  │
+└──────────────┬──────────────────────┘
+               │
+               ▼
+        ┌──────────┐
+        │  Kafka   │
+        │ (Topic:  │
+        │validated-chunks)│
+        └────┬─────┘
+             │
+             ▼
+┌─────────────────────────────────────┐
+│    DB Ingestion Service             │
+│  ┌───────────────────────────────┐  │
+│  │ 1. Kafka Consumer            │  │
+│  │ 2. Batch Insert              │  │
+│  │    - Valid → csv_records     │  │
+│  │    - Invalid → error_records │  │
 │  └───────────────────────────────┘  │
 └──────────────┬──────────────────────┘
                │
                ▼
         ┌──────────┐
         │ MongoDB  │
-        └──────────┘
-
-        ┌──────────┐
-        │   DLQ    │
-        │  Handler │
+        │ ┌──────┐ │
+        │ │csv_  │ │
+        │ │records││
+        │ └──────┘ │
+        │ ┌──────┐ │
+        │ │error │ │
+        │ │records││
+        │ └──────┘ │
         └──────────┘
 ```
 
 ## 🚀 Features
 
 ### Core Features
-- ✅ **File Upload API** - RESTful API for CSV file uploads
-- ✅ **Pre-Ingestion Validation** - Comprehensive validation before processing:
-  - File size validation
-  - File type validation (CSV only)
-  - CSV format validation (headers, row structure)
-- ✅ **Kafka Event Production** - Produces metadata events after successful validation
-- ✅ **Streaming CSV Processing** - Memory-efficient streaming parser
-- ✅ **Batch MongoDB Inserts** - Optimized bulk operations with configurable batch sizes
-- ✅ **Dead Letter Queue (DLQ)** - Handles failed jobs gracefully
+- ✅ **File Upload API** - RESTful API for CSV file uploads (single or batch up to 100 files)
+- ✅ **Two-Stage Pipeline** - Decoupled validation and persistence for optimal performance
+- ✅ **Basic API Validation** - Fast file size and type validation at API level
+- ✅ **Row-Level Validation** - Comprehensive validation in validation service (id, name, email, created_at)
+- ✅ **Kafka Event Production** - Produces to `file-ingestion` topic after basic validation
+- ✅ **Chunked Processing** - Files chunked into 5,000-row batches for efficient processing
+- ✅ **Dual MongoDB Collections** - Valid rows → `csv_records`, Invalid rows → `error_records`
+- ✅ **Dead Letter Queue (DLQ)** - Handles system failures gracefully
 
 ### Performance Optimizations
 - **Streaming Processing** - Files are processed in streams, not loaded entirely into memory
@@ -162,11 +187,25 @@ npm run start:dlq-handler
 
 ## 📖 Usage
 
-### Upload a CSV File
+### Upload a Single CSV File
 
 ```bash
 curl -X POST http://localhost:3000/api/v1/upload \
   -F "file=@/path/to/your/file.csv"
+```
+
+### Upload Multiple CSV Files (Batch - up to 100 files)
+
+```bash
+curl -X POST http://localhost:3000/api/v1/upload/batch \
+  -F "files=@/path/to/file1.csv" \
+  -F "files=@/path/to/file2.csv" \
+  -F "files=@/path/to/file3.csv"
+```
+
+Or use the batch upload script:
+```bash
+node scripts/batch-upload.js 100 10000
 ```
 
 ### Example Response
@@ -224,55 +263,91 @@ MAX_CONCURRENT_FILES=5
 
 ```
 CSV Ingestion Pipeline/
-├── shared/                 # Shared utilities and libraries
+├── shared/                      # Shared utilities and libraries
 │   ├── src/
-│   │   ├── config.js      # Configuration management
-│   │   ├── logger.js      # Logging utility
-│   │   ├── validation.js  # File validation logic
-│   │   ├── kafka-schemas.js # Kafka message schemas
-│   │   └── storage.js     # Storage abstraction
+│   │   ├── config.js           # Configuration management
+│   │   ├── logger.js            # Logging utility
+│   │   ├── validation.js        # File validation logic
+│   │   ├── row-validation.js   # Row-level validation
+│   │   ├── kafka-schemas.js     # Kafka message schemas
+│   │   ├── kafka-admin.js      # Kafka topic management
+│   │   └── storage.js          # Storage abstraction
 │   └── package.json
-├── ingestion-api/         # Upload and validation service
+├── ingestion-api/               # Upload API service
 │   ├── src/
-│   │   ├── index.js       # Express app entry point
-│   │   ├── kafka-producer.js # Kafka producer
-│   │   ├── upload-handler.js # Multer configuration
-│   │   └── routes/
-│   │       └── upload.js  # Upload endpoints
+│   │   ├── index.js            # Express app entry point
+│   │   ├── kafka-producer.js   # Kafka producer
+│   │   ├── controllers/        # Request handlers
+│   │   │   └── upload-controller.js
+│   │   ├── services/           # Business logic
+│   │   │   └── upload-service.js
+│   │   ├── middleware/         # Middleware
+│   │   │   └── upload-handler.js
+│   │   └── routes/             # Route definitions
+│   │       └── upload.js
 │   ├── Dockerfile
 │   └── package.json
-├── worker/                 # CSV processing worker
+├── validation-service/          # Row validation service
 │   ├── src/
-│   │   ├── index.js       # Worker entry point
-│   │   ├── kafka-consumer.js # Kafka consumer
-│   │   ├── csv-processor.js # CSV streaming processor
-│   │   ├── mongodb-client.js # MongoDB client
-│   │   └── dlq-handler.js # DLQ handler service
+│   │   ├── index.js
+│   │   ├── kafka-consumer.js   # Consumes file-ingestion
+│   │   └── csv-validator.js   # Validates & chunks
 │   ├── Dockerfile
 │   └── package.json
-├── docker-compose.yml      # Docker Compose configuration
-├── .env.example           # Environment variables template
-└── README.md              # This file
+├── worker/                      # DB ingestion service
+│   ├── src/
+│   │   ├── index.js            # Service entry point
+│   │   ├── kafka-consumer.js   # Consumes validated-chunks
+│   │   ├── chunk-processor.js  # Processes chunks
+│   │   ├── mongodb-client.js   # MongoDB client (dual collections)
+│   │   └── dlq-handler.js      # DLQ handler service
+│   ├── Dockerfile
+│   └── package.json
+├── scripts/                     # Test utilities
+│   ├── batch-upload.js         # Batch upload script
+│   ├── bulk-upload-test.js     # Bulk upload test
+│   └── generate-sample-csv.js  # CSV generator
+├── docker-compose.yml           # Docker Compose configuration
+├── env/                        # Environment configurations
+│   ├── env.example
+│   ├── env.local
+│   └── env.docker
+└── README.md                    # This file
 ```
 
 ## 🔍 Validation Details
 
-### File Size Validation
-- Checks if file is empty
-- Validates against maximum file size (default: 5000 MB)
-- Throws `ValidationError` with code `FILE_TOO_LARGE` if exceeded
+### API-Level Validation (Basic - Fast)
+Performed by **Ingestion API** before producing Kafka event:
 
-### File Type Validation
-- Validates file extension (.csv)
-- Validates MIME type (text/csv, application/csv)
-- Throws `ValidationError` with code `INVALID_FILE_TYPE` if invalid
+1. **File Size Validation**
+   - Checks if file is empty
+   - Validates against maximum file size (default: 5000 MB)
+   - Throws `ValidationError` with code `FILE_TOO_LARGE` if exceeded
 
-### CSV Format Validation
-- Validates CSV headers exist
-- Checks for required columns (configurable)
-- Samples rows for validation (default: 1000 rows)
-- Validates row structure and parsing
-- Throws `ValidationError` with appropriate codes if validation fails
+2. **File Type Validation**
+   - Validates file extension (.csv)
+   - Validates MIME type (text/csv, application/csv)
+   - Throws `ValidationError` with code `INVALID_FILE_TYPE` if invalid
+
+### Validation Service (Row-Level - Heavy)
+Performed by **Validation Service** after consuming from `file-ingestion` topic:
+
+1. **CSV Format Validation**
+   - Validates CSV headers exist
+   - Checks for required columns: `id`, `name`, `email`, `created_at`
+   - Validates row structure and parsing
+
+2. **Row Data Validation**
+   - `id`: Required, string or number
+   - `name`: Required, non-empty string, max 255 characters
+   - `email`: Required, valid email format (regex validated)
+   - `created_at`: Required, valid ISO 8601 datetime
+
+3. **Chunking**
+   - Valid rows and invalid rows separated
+   - Chunked into 5,000-row batches
+   - Produced to `validated-chunks` topic
 
 ## 📊 Performance Considerations
 
@@ -314,7 +389,7 @@ CSV Ingestion Pipeline/
 ## 📝 API Documentation
 
 ### POST /api/v1/upload
-Upload a CSV file for processing.
+Upload a single CSV file for processing.
 
 **Request:**
 - Method: `POST`
@@ -329,11 +404,30 @@ Upload a CSV file for processing.
   "fileId": "uuid",
   "fileName": "file.csv",
   "fileSize": 1234567,
-  "headers": ["col1", "col2"],
-  "estimatedRowCount": 10000,
   "status": "pending",
-  "message": "File uploaded and validated successfully...",
+  "message": "File uploaded successfully. Processing will begin shortly.",
   "processingTimeMs": 1234
+}
+```
+
+### POST /api/v1/upload/batch
+Upload multiple CSV files (up to 100) in a single request.
+
+**Request:**
+- Method: `POST`
+- Content-Type: `multipart/form-data`
+- Body: `files` field containing array of CSV files (max 100)
+
+**Response (Success - 201):**
+```json
+{
+  "success": true,
+  "totalFiles": 100,
+  "successful": 100,
+  "failed": 0,
+  "results": [...],
+  "message": "100 file(s) uploaded successfully. Processing will begin shortly.",
+  "processingTimeMs": 5678
 }
 ```
 

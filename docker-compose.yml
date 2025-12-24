@@ -163,8 +163,8 @@ services:
     environment:
       KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092,kafka2:9093,kafka3:9094}
       KAFKA_CLIENT_ID: ${KAFKA_CLIENT_ID:-ingestion-api}
-      KAFKA_INGESTION_TOPIC: ${KAFKA_INGESTION_TOPIC:-csv.ingestion}
-      KAFKA_DLQ_TOPIC: ${KAFKA_DLQ_TOPIC:-csv.ingestion.dlq}
+      KAFKA_FILE_INGESTION_TOPIC: ${KAFKA_FILE_INGESTION_TOPIC:-file-ingestion}
+      KAFKA_FILE_INGESTION_DLQ_TOPIC: ${KAFKA_FILE_INGESTION_DLQ_TOPIC:-file-ingestion-dlq}
       MONGODB_URI: ${MONGODB_URI:-mongodb://mongodb:27017}
       MONGODB_DATABASE: ${MONGODB_DATABASE:-csv_ingestion}
       UPLOAD_DIR: ${UPLOAD_DIR:-/app/uploads}
@@ -193,26 +193,24 @@ services:
       timeout: 5s
       retries: 10
 
-  # Worker Service (can scale horizontally)
-  worker:
+  # Validation Service (can scale horizontally)
+  validation-service:
     build:
       context: .
-      dockerfile: worker/Dockerfile
+      dockerfile: validation-service/Dockerfile
     env_file:
       - .env.docker
     environment:
       KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092,kafka2:9093,kafka3:9094}
-      KAFKA_CLIENT_ID: ${KAFKA_CLIENT_ID:-csv-worker}
-      KAFKA_INGESTION_TOPIC: ${KAFKA_INGESTION_TOPIC:-csv.ingestion}
-      KAFKA_DLQ_TOPIC: ${KAFKA_DLQ_TOPIC:-csv.ingestion.dlq}
-      KAFKA_CONSUMER_GROUP_ID: ${KAFKA_CONSUMER_GROUP_ID:-csv-ingestion-workers}
-      MONGODB_URI: ${MONGODB_URI:-mongodb://mongodb:27017}
-      MONGODB_DATABASE: ${MONGODB_DATABASE:-csv_ingestion}
-      MONGODB_COLLECTION: ${MONGODB_COLLECTION:-csv_records}
+      KAFKA_CLIENT_ID: ${KAFKA_CLIENT_ID:-validation-service}
+      KAFKA_FILE_INGESTION_TOPIC: ${KAFKA_FILE_INGESTION_TOPIC:-file-ingestion}
+      KAFKA_VALIDATED_CHUNKS_TOPIC: ${KAFKA_VALIDATED_CHUNKS_TOPIC:-validated-chunks}
+      KAFKA_FILE_INGESTION_DLQ_TOPIC: ${KAFKA_FILE_INGESTION_DLQ_TOPIC:-file-ingestion-dlq}
+      KAFKA_VALIDATION_CONSUMER_GROUP_ID: ${KAFKA_VALIDATION_CONSUMER_GROUP_ID:-validation-service-workers}
       UPLOAD_DIR: ${UPLOAD_DIR:-/app/uploads}
-      BATCH_SIZE: ${BATCH_SIZE:-10000}
-      MAX_CONCURRENT_FILES: ${MAX_CONCURRENT_FILES:-5}
-      WORKER_POLL_INTERVAL_MS: ${WORKER_POLL_INTERVAL_MS:-100}
+      VALIDATION_CHUNK_SIZE: ${VALIDATION_CHUNK_SIZE:-5000}
+      VALIDATION_MAX_CONCURRENT_FILES: ${VALIDATION_MAX_CONCURRENT_FILES:-6}
+      VALIDATION_POLL_INTERVAL_MS: ${VALIDATION_POLL_INTERVAL_MS:-100}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     volumes:
       - ./uploads:/app/uploads
@@ -223,16 +221,53 @@ services:
         condition: service_healthy
       kafka3:
         condition: service_healthy
+    networks:
+      - csv-pipeline-network
+    restart: unless-stopped
+    deploy:
+      replicas: 6  # Horizontal scaling for validation
+
+  # DB Ingestion Service (can scale horizontally)
+  db-ingestion-service:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    env_file:
+      - .env.docker
+    environment:
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092,kafka2:9093,kafka3:9094}
+      KAFKA_CLIENT_ID: ${KAFKA_CLIENT_ID:-db-ingestion-service}
+      KAFKA_VALIDATED_CHUNKS_TOPIC: ${KAFKA_VALIDATED_CHUNKS_TOPIC:-validated-chunks}
+      KAFKA_VALIDATED_CHUNKS_DLQ_TOPIC: ${KAFKA_VALIDATED_CHUNKS_DLQ_TOPIC:-validated-chunks-dlq}
+      KAFKA_DB_INGESTION_CONSUMER_GROUP_ID: ${KAFKA_DB_INGESTION_CONSUMER_GROUP_ID:-db-ingestion-service-workers}
+      MONGODB_URI: ${MONGODB_URI:-mongodb://mongodb:27017}
+      MONGODB_DATABASE: ${MONGODB_DATABASE:-csv_ingestion}
+      MONGODB_VALID_RECORDS_COLLECTION: ${MONGODB_VALID_RECORDS_COLLECTION:-csv_records}
+      MONGODB_ERROR_RECORDS_COLLECTION: ${MONGODB_ERROR_RECORDS_COLLECTION:-error_records}
+      MONGODB_JOBS_COLLECTION: ${MONGODB_JOBS_COLLECTION:-jobs}
+      DB_INGESTION_BATCH_SIZE: ${DB_INGESTION_BATCH_SIZE:-5000}
+      DB_INGESTION_MAX_CONCURRENT_CHUNKS: ${DB_INGESTION_MAX_CONCURRENT_CHUNKS:-24}
+      DB_INGESTION_POLL_INTERVAL_MS: ${DB_INGESTION_POLL_INTERVAL_MS:-100}
+      DB_INGESTION_RETRY_COUNT: ${DB_INGESTION_RETRY_COUNT:-3}
+      DB_INGESTION_RETRY_BACKOFF_MS: ${DB_INGESTION_RETRY_BACKOFF_MS:-1000}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka2:
+        condition: service_healthy
+      kafka3:
+        condition: service_healthy
       mongodb:
         condition: service_healthy
     networks:
       - csv-pipeline-network
     restart: unless-stopped
     deploy:
-      replicas: 6  # Horizontal scaling example
+      replicas: 6  # Horizontal scaling for DB ingestion
 
-  # DLQ Handler Service
-  dlq-handler:
+  # DLQ Handler Service (for file-ingestion-dlq)
+  dlq-handler-file-ingestion:
     build:
       context: .
       dockerfile: worker/Dockerfile
@@ -241,8 +276,8 @@ services:
       - .env.docker
     environment:
       KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092,kafka2:9093,kafka3:9094}
-      KAFKA_CLIENT_ID: ${KAFKA_CLIENT_ID:-dlq-handler}
-      KAFKA_DLQ_TOPIC: ${KAFKA_DLQ_TOPIC:-csv.ingestion.dlq}
+      KAFKA_CLIENT_ID: ${KAFKA_CLIENT_ID:-dlq-handler-file-ingestion}
+      KAFKA_DLQ_TOPIC: ${KAFKA_FILE_INGESTION_DLQ_TOPIC:-file-ingestion-dlq}
       MONGODB_URI: ${MONGODB_URI:-mongodb://mongodb:27017}
       MONGODB_DATABASE: ${MONGODB_DATABASE:-csv_ingestion}
       LOG_LEVEL: ${LOG_LEVEL:-info}
@@ -259,7 +294,37 @@ services:
       - csv-pipeline-network
     restart: unless-stopped
     deploy:
-      replicas: 3  # Horizontal scaling example
+      replicas: 3
+
+  # DLQ Handler Service (for validated-chunks-dlq)
+  dlq-handler-validated-chunks:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    command: node src/dlq-handler.js
+    env_file:
+      - .env.docker
+    environment:
+      KAFKA_BROKERS: ${KAFKA_BROKERS:-kafka:9092,kafka2:9093,kafka3:9094}
+      KAFKA_CLIENT_ID: ${KAFKA_CLIENT_ID:-dlq-handler-validated-chunks}
+      KAFKA_DLQ_TOPIC: ${KAFKA_VALIDATED_CHUNKS_DLQ_TOPIC:-validated-chunks-dlq}
+      MONGODB_URI: ${MONGODB_URI:-mongodb://mongodb:27017}
+      MONGODB_DATABASE: ${MONGODB_DATABASE:-csv_ingestion}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka2:
+        condition: service_healthy
+      kafka3:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+    networks:
+      - csv-pipeline-network
+    restart: unless-stopped
+    deploy:
+      replicas: 3
 
 
 networks:

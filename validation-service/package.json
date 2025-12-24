@@ -1,0 +1,21 @@
+{
+  "name": "@csv-pipeline/validation-service",
+  "version": "1.0.0",
+  "description": "CSV Validation Service - validates CSV rows and produces validated chunks",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js"
+  },
+  "dependencies": {
+    "kafkajs": "^2.2.4",
+    "csv-parser": "^3.0.0",
+    "uuid": "^9.0.1",
+    "dotenv": "^16.3.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  }
+}
+

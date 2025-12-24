@@ -44,9 +44,9 @@ Host: localhost:3000
 
 ---
 
-### 2. Upload CSV File
+### 2. Upload Single CSV File
 
-Upload a CSV file for ingestion and processing.
+Upload a single CSV file for ingestion and processing.
 
 **Endpoint:** `POST /api/v1/upload`
 
@@ -80,6 +80,69 @@ curl -X POST http://localhost:3000/api/v1/upload \
   - Max size: 5000 MB (configurable via `MAX_FILE_SIZE_MB`)
   - MIME types: `text/csv`, `application/csv`, `text/plain`
 
+---
+
+### 2a. Upload Multiple CSV Files (Batch)
+
+Upload up to 100 CSV files in a single request for batch processing.
+
+**Endpoint:** `POST /api/v1/upload/batch`
+
+**Content-Type:** `multipart/form-data`
+
+**Request:**
+```http
+POST /api/v1/upload/batch HTTP/1.1
+Host: localhost:3000
+Content-Type: multipart/form-data; boundary=----WebKitFormBoundary7MA4YWxkTrZu0gW
+
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="files"; filename="file1.csv"
+Content-Type: text/csv
+...
+------WebKitFormBoundary7MA4YWxkTrZu0gW
+Content-Disposition: form-data; name="files"; filename="file2.csv"
+Content-Type: text/csv
+...
+------WebKitFormBoundary7MA4YWxkTrZu0gW--
+```
+
+**cURL Example:**
+```bash
+curl -X POST http://localhost:3000/api/v1/upload/batch \
+  -F "files=@/path/to/file1.csv" \
+  -F "files=@/path/to/file2.csv" \
+  -F "files=@/path/to/file3.csv"
+```
+
+**Request Parameters:**
+- `files` (file[], required): Array of CSV files to upload (max 100 files)
+  - Each file: extension `.csv`, max size 5000 MB
+  - MIME types: `text/csv`, `application/csv`, `text/plain`
+
+**Success Response (201 Created):**
+```json
+{
+  "success": true,
+  "totalFiles": 3,
+  "successful": 3,
+  "failed": 0,
+  "results": [
+    {
+      "success": true,
+      "jobId": "550e8400-e29b-41d4-a716-446655440000",
+      "fileId": "660e8400-e29b-41d4-a716-446655440001",
+      "fileName": "file1.csv",
+      "fileSize": 1048576,
+      "status": "pending"
+    },
+    ...
+  ],
+  "message": "3 file(s) uploaded successfully. Processing will begin shortly.",
+  "processingTimeMs": 1234
+}
+```
+
 **Success Response (201 Created):**
 ```json
 {
@@ -88,10 +151,8 @@ curl -X POST http://localhost:3000/api/v1/upload \
   "fileId": "660e8400-e29b-41d4-a716-446655440001",
   "fileName": "data.csv",
   "fileSize": 1048576,
-  "headers": ["id", "name", "email", "created_at"],
-  "estimatedRowCount": 10000,
   "status": "pending",
-  "message": "File uploaded and validated successfully. Processing will begin shortly.",
+  "message": "File uploaded successfully. Processing will begin shortly.",
   "processingTimeMs": 1234
 }
 ```
@@ -102,11 +163,11 @@ curl -X POST http://localhost:3000/api/v1/upload \
 - `fileId` (string): Unique file identifier (UUID)
 - `fileName` (string): Original filename
 - `fileSize` (number): File size in bytes
-- `headers` (array): CSV column headers
-- `estimatedRowCount` (number): Estimated number of rows
 - `status` (string): Job status ("pending")
 - `message` (string): Human-readable message
-- `processingTimeMs` (number): Validation processing time in milliseconds
+- `processingTimeMs` (number): Processing time in milliseconds
+
+**Note:** CSV format validation (headers, row count) is performed by the validation service, not the API. The API only performs basic validation (file size, file type).
 
 **Error Response (400 Bad Request):**
 ```json
@@ -144,7 +205,7 @@ curl -X POST http://localhost:3000/api/v1/upload \
 - `details` (object): Additional error details
 - `processingTimeMs` (number): Processing time before error
 
-**Validation Rules:**
+**Validation Rules (API Level - Basic Validation Only):**
 
 1. **File Size:**
    - File must not be empty
@@ -154,28 +215,35 @@ curl -X POST http://localhost:3000/api/v1/upload \
    - File extension must be `.csv`
    - MIME type should be `text/csv`, `application/csv`, or `text/plain`
 
-3. **CSV Format:**
-   - File must have headers (first row)
-   - Headers must include required columns (configurable via `REQUIRED_COLUMNS`)
-   - Default required columns: `id`, `name`, `email`, `created_at`
-   - CSV must be parseable (valid CSV format)
+**Note:** Heavy CSV format validation (headers, row structure, required columns) is performed by the **Validation Service**, not the API. This separation ensures:
+- Fast API response times
+- API only handles basic file validation
+- Detailed CSV validation happens asynchronously in the validation service
 
 **Processing Flow:**
 
-1. File is uploaded via multipart/form-data
-2. File is stored temporarily
-3. Validation is performed:
+1. File(s) uploaded via multipart/form-data
+2. File(s) stored temporarily
+3. **Basic validation** performed (API level):
    - File size check
    - File type check
-   - CSV format validation (headers, sample rows)
-4. If validation fails:
-   - Error response is returned
-   - File is deleted
-   - No Kafka event is produced
-5. If validation succeeds:
-   - Kafka event is produced with job metadata
-   - Success response is returned
-   - File remains for worker processing
+4. If basic validation fails:
+   - Error response returned immediately
+   - File deleted
+   - No Kafka event produced
+5. If basic validation succeeds:
+   - Kafka event produced to `file-ingestion` topic
+   - Success response returned
+   - File remains for validation service processing
+6. **Validation Service** (asynchronous):
+   - Consumes from `file-ingestion` topic
+   - Performs CSV format validation (headers, rows)
+   - Validates row data (id, name, email, created_at)
+   - Produces validated chunks to `validated-chunks` topic
+7. **DB Ingestion Service** (asynchronous):
+   - Consumes validated chunks
+   - Inserts valid rows to `csv_records`
+   - Inserts invalid rows to `error_records`
 
 ---
 
@@ -249,7 +317,7 @@ All errors follow this format:
 
 ## Examples
 
-### Example 1: Successful Upload
+### Example 1: Successful Single File Upload
 
 **Request:**
 ```bash
@@ -265,11 +333,32 @@ curl -X POST http://localhost:3000/api/v1/upload \
   "fileId": "660e8400-e29b-41d4-a716-446655440001",
   "fileName": "sample.csv",
   "fileSize": 123456,
-  "headers": ["id", "name", "email", "created_at"],
-  "estimatedRowCount": 1000,
   "status": "pending",
-  "message": "File uploaded and validated successfully. Processing will begin shortly.",
+  "message": "File uploaded successfully. Processing will begin shortly.",
   "processingTimeMs": 1234
+}
+```
+
+### Example 1a: Successful Batch Upload (100 files)
+
+**Request:**
+```bash
+curl -X POST http://localhost:3000/api/v1/upload/batch \
+  -F "files=@file1.csv" \
+  -F "files=@file2.csv" \
+  ... (up to 100 files)
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "totalFiles": 100,
+  "successful": 100,
+  "failed": 0,
+  "results": [...],
+  "message": "100 file(s) uploaded successfully. Processing will begin shortly.",
+  "processingTimeMs": 5678
 }
 ```
 

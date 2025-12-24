@@ -10,117 +10,157 @@ The CSV Ingestion Pipeline is designed as a microservices architecture with clea
 
 ### 1. Ingestion API Service
 
-**Purpose:** Handles file uploads, performs validation, and initiates processing workflow.
+**Purpose:** Handles file uploads (single or batch up to 100 files), performs basic validation, and initiates processing workflow.
 
 **Responsibilities:**
-- Accept file uploads via HTTP API
-- Validate file size, type, and format
+- Accept file uploads via HTTP API (single or batch)
+- Perform basic validation (file size, file type only)
 - Store uploaded files
-- Produce Kafka events with job metadata
+- Produce Kafka events to `file-ingestion` topic
 - Return immediate feedback to clients
 
 **Technology Stack:**
 - Express.js for HTTP server
 - Multer for file upload handling
 - KafkaJS for Kafka producer
-- csv-parser for streaming CSV validation
 
 **Key Design Decisions:**
-- **Synchronous Validation:** Validation happens synchronously before producing Kafka event. This ensures invalid files don't enter the processing pipeline.
-- **Metadata-Only Events:** Only metadata is sent to Kafka, not file contents. This reduces Kafka message size and improves performance.
-- **Immediate Error Response:** Validation errors are returned immediately, providing fast feedback to clients.
+- **Controller/Route/Service Pattern:** Clean separation of concerns for maintainability
+- **Basic Validation Only:** Fast file size and type checks. Heavy CSV validation moved to validation service.
+- **Batch Upload Support:** Handles up to 100 files in a single request
+- **Metadata-Only Events:** Only metadata sent to Kafka, not file contents
+- **Immediate Error Response:** Basic validation errors returned immediately
 
-### 2. Worker Service
+### 2. Validation Service
 
-**Purpose:** Consumes Kafka events and processes CSV files, inserting data into MongoDB.
+**Purpose:** Consumes file ingestion events, validates CSV rows, and produces validated chunks.
 
 **Responsibilities:**
-- Consume ingestion job messages from Kafka
+- Consume messages from `file-ingestion` topic
 - Stream CSV files (memory-efficient)
-- Process rows in batches
-- Insert batches into MongoDB using bulk operations
-- Handle errors and send failed jobs to DLQ
+- Validate each row (id, name, email, created_at)
+- Chunk rows into 5,000-row batches
+- Separate valid and invalid rows
+- Produce validated chunks to `validated-chunks` topic
+
+**Technology Stack:**
+- KafkaJS for Kafka consumer and producer
+- csv-parser for streaming CSV parsing
+- Row validation logic
+
+**Key Design Decisions:**
+- **Streaming Processing:** Files processed using Node.js streams, preventing memory exhaustion
+- **Chunk-Based Processing:** 5,000 rows per chunk for optimal throughput
+- **Row-Level Validation:** Validates data quality (email format, date format, etc.)
+- **Separation of Concerns:** Validation decoupled from persistence
+
+### 3. DB Ingestion Service
+
+**Purpose:** Consumes validated chunks and inserts them into MongoDB.
+
+**Responsibilities:**
+- Consume validated chunk messages from `validated-chunks` topic
+- Insert valid rows to `csv_records` collection
+- Insert invalid rows to `error_records` collection
+- Handle errors and send failed chunks to DLQ
+- Retry logic with exponential backoff
 
 **Technology Stack:**
 - KafkaJS for Kafka consumer
-- csv-parser for streaming CSV parsing
 - MongoDB Node.js driver for database operations
 
 **Key Design Decisions:**
-- **Streaming Processing:** Files are processed using Node.js streams, preventing memory exhaustion for large files.
-- **Batch Inserts:** Rows are accumulated in batches before inserting to MongoDB, optimizing write performance.
-- **Backpressure Handling:** Stream is paused during database writes to prevent memory buildup.
-- **Idempotency:** Job tracking prevents duplicate processing of the same file.
+- **Dual Collection Strategy:** Valid and invalid rows stored separately
+- **Batch Inserts:** Optimized bulk operations for high throughput
+- **Retry Logic:** 3 retries with exponential backoff before DLQ
+- **Idempotency:** Chunk tracking prevents duplicate processing
 
-### 3. DLQ Handler Service
+### 4. DLQ Handler Service
 
-**Purpose:** Processes failed jobs from the Dead Letter Queue.
+**Purpose:** Processes failed jobs from Dead Letter Queues and stores them in MongoDB.
 
 **Responsibilities:**
-- Consume messages from DLQ topic
-- Log error details
-- Optionally archive or retry failed jobs
+- Consume messages from DLQ topics (`file-ingestion-dlq`, `validated-chunks-dlq`)
+- Store failed jobs in MongoDB `jobs` collection
+- Log error details for analysis
 - Provide visibility into processing failures
 
 **Technology Stack:**
 - KafkaJS for Kafka consumer
+- MongoDB Node.js driver
 
 **Key Design Decisions:**
-- **Separate Service:** DLQ handler runs as a separate service for isolation and independent scaling.
-- **Error Logging:** Comprehensive error logging for debugging and analysis.
-- **Extensible:** Can be extended to support retry mechanisms, alerting, or archival.
+- **Separate Service:** Runs as separate service for isolation
+- **MongoDB Storage:** Failed jobs stored for analysis and monitoring
+- **Extensible:** Can be extended for retry mechanisms, alerting, or archival
 
 ## Data Flow
 
-### Happy Path
+### Happy Path (Two-Stage Pipeline)
 
-1. **Client Uploads File**
-   - Client sends POST request with CSV file to `/api/v1/upload`
-   - Ingestion API receives file via Multer middleware
+1. **Client Uploads File(s)**
+   - Client sends POST request with CSV file(s) to `/api/v1/upload` or `/api/v1/upload/batch`
+   - Ingestion API receives file(s) via Multer middleware
+   - Supports up to 100 files in batch upload
 
-2. **Validation**
+2. **Basic Validation (API Level)**
    - File size validation (check against max size)
    - File type validation (CSV extension and MIME type)
-   - CSV format validation (headers, sample rows)
+   - **Note:** CSV format validation moved to validation service
 
 3. **File Storage**
-   - Validated file is stored on filesystem (or cloud storage)
-   - File path is recorded for later processing
+   - Validated file(s) stored on filesystem
+   - File path recorded for later processing
 
-4. **Kafka Event Production**
-   - Ingestion API produces message to `csv.ingestion` topic
-   - Message contains: jobId, fileId, filePath, headers, row count, etc.
+4. **Kafka Event Production (Stage 1)**
+   - Ingestion API produces message to `file-ingestion` topic
+   - Message contains: jobId, fileId, filePath, fileSize, etc.
+   - **No CSV content or headers** - determined by validation service
 
-5. **Worker Consumption**
-   - Worker service consumes message from Kafka
-   - Worker opens CSV file from storage
+5. **Validation Service Consumption**
+   - Validation service consumes message from `file-ingestion` topic
+   - Opens CSV file from storage
 
-6. **CSV Processing**
-   - CSV file is streamed row by row
-   - Rows are accumulated into batches
-   - When batch reaches configured size, insert to MongoDB
+6. **Row Validation & Chunking**
+   - CSV file streamed row by row
+   - Each row validated (id, name, email, created_at)
+   - Rows separated into valid and invalid
+   - Rows chunked into 5,000-row batches
 
-7. **MongoDB Insertion**
-   - Batch is inserted using MongoDB bulkWrite
-   - Process continues until all rows are processed
+7. **Validated Chunk Production (Stage 2)**
+   - Validation service produces validated chunks to `validated-chunks` topic
+   - Each chunk contains: validRows[], invalidRows[], chunkNumber, totalChunks
 
-8. **Completion**
-   - Worker logs completion statistics
-   - Kafka offset is committed
+8. **DB Ingestion Service Consumption**
+   - DB ingestion service consumes validated chunks
+   - Inserts valid rows to `csv_records` collection
+   - Inserts invalid rows to `error_records` collection
+
+9. **Completion**
+   - All chunks processed
+   - Kafka offsets committed
+   - Job status updated in MongoDB
 
 ### Error Path
 
-1. **Validation Failure**
-   - Validation error is thrown
-   - File is deleted
+1. **Basic Validation Failure (API Level)**
+   - File size or type validation fails
+   - File is deleted immediately
    - HTTP 400 error returned to client
    - No Kafka event is produced
 
-2. **Processing Failure**
-   - Error occurs during CSV processing or MongoDB insertion
+2. **File Processing Failure (Validation Service)**
+   - Error occurs during CSV streaming or validation
    - Error is logged with full context
-   - DLQ message is produced to `csv.ingestion.dlq` topic
-   - DLQ handler processes the failure
+   - DLQ message produced to `file-ingestion-dlq` topic
+   - DLQ handler stores failure in MongoDB
+
+3. **Chunk Insertion Failure (DB Ingestion Service)**
+   - Error occurs during MongoDB insertion
+   - Retry logic attempts 3 times with exponential backoff
+   - If all retries fail, DLQ message produced to `validated-chunks-dlq` topic
+   - DLQ handler stores failure in MongoDB
+   - **Note:** Invalid rows (data validation failures) go to `error_records`, not DLQ
 
 ## Scalability Design
 

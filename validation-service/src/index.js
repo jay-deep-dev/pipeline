@@ -1,25 +1,24 @@
 /**
- * DB Ingestion Service Entry Point
+ * Validation Service Entry Point
  * 
- * Main DB ingestion service that consumes validated-chunks messages
- * and inserts them into MongoDB (valid rows to csv_records, invalid rows to error_records).
+ * Main validation service that consumes file-ingestion messages,
+ * validates CSV rows, chunks them, and produces validated-chunks messages.
  * 
- * @module db-ingestion-service
+ * @module validation-service
  */
 
 import { getConfig, createLogger } from '../../shared/index.js';
 import { ensureKafkaTopics } from '../../shared/src/kafka-admin.js';
-import { getMongoDBClient } from './mongodb-client.js';
 import { getKafkaConsumer } from './kafka-consumer.js';
 
 const config = getConfig();
-const logger = createLogger('worker', config.logging.level);
+const logger = createLogger('validation-service', config.logging.level);
 
 /**
  * Graceful shutdown handler
  */
 async function shutdown() {
-  logger.info('Shutting down DB ingestion service...');
+  logger.info('Shutting down validation service...');
 
   try {
     // Stop Kafka consumer
@@ -27,11 +26,7 @@ async function shutdown() {
     await kafkaConsumer.stop();
     await kafkaConsumer.disconnect();
 
-    // Disconnect MongoDB
-    const mongoClient = getMongoDBClient();
-    await mongoClient.disconnect();
-
-    logger.info('DB ingestion service shut down successfully');
+    logger.info('Validation service shut down successfully');
     process.exit(0);
   } catch (error) {
     logger.error('Error during shutdown', { error: error.message });
@@ -60,29 +55,22 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 /**
- * Start the worker service
+ * Start the validation service
  */
 async function start() {
   try {
-    logger.info('Starting DB ingestion service...', {
+    logger.info('Starting validation service...', {
       kafkaBrokers: config.kafka.brokers,
-      kafkaTopic: config.kafka.validatedChunksTopic,
-      consumerGroupId: config.kafka.dbIngestionConsumerGroupId,
-      mongodbUri: config.mongodb.uri,
-      validRecordsCollection: config.mongodb.validRecordsCollection,
-      errorRecordsCollection: config.mongodb.errorRecordsCollection,
-      batchSize: config.dbIngestion.batchSize,
-      maxConcurrentChunks: config.dbIngestion.maxConcurrentChunks,
+      fileIngestionTopic: config.kafka.fileIngestionTopic,
+      validatedChunksTopic: config.kafka.validatedChunksTopic,
+      consumerGroupId: config.kafka.validationConsumerGroupId,
+      chunkSize: config.validation.chunkSize,
+      maxConcurrentFiles: config.validation.maxConcurrentFiles,
     });
 
     // Ensure Kafka topics exist before connecting consumer
     logger.info('Ensuring Kafka topics exist...');
     await ensureKafkaTopics();
-
-    // Connect to MongoDB
-    logger.info('Connecting to MongoDB...');
-    const mongoClient = getMongoDBClient();
-    await mongoClient.connect();
 
     // Connect to Kafka and start consuming
     logger.info('Connecting to Kafka...');
@@ -90,9 +78,9 @@ async function start() {
     await kafkaConsumer.connect();
     await kafkaConsumer.start();
 
-    logger.info('DB ingestion service started successfully');
+    logger.info('Validation service started successfully');
   } catch (error) {
-    logger.error('Failed to start worker service', {
+    logger.error('Failed to start validation service', {
       error: error.message,
       stack: error.stack,
     });

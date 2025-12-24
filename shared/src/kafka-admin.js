@@ -36,26 +36,38 @@ export async function ensureKafkaTopics() {
     await admin.connect();
 
     logger.info('Ensuring Kafka topics exist', {
-      ingestionTopic: config.kafka.ingestionTopic,
-      ingestionPartitions: config.kafka.ingestionPartitions,
-      ingestionReplicationFactor: config.kafka.ingestionReplicationFactor,
-      dlqTopic: config.kafka.dlqTopic,
-      dlqPartitions: config.kafka.dlqPartitions,
-      dlqReplicationFactor: config.kafka.dlqReplicationFactor,
+      fileIngestionTopic: config.kafka.fileIngestionTopic,
+      fileIngestionPartitions: config.kafka.fileIngestionPartitions,
+      fileIngestionReplicationFactor: config.kafka.fileIngestionReplicationFactor,
+      validatedChunksTopic: config.kafka.validatedChunksTopic,
+      validatedChunksPartitions: config.kafka.validatedChunksPartitions,
+      validatedChunksReplicationFactor: config.kafka.validatedChunksReplicationFactor,
+      fileIngestionDlqTopic: config.kafka.fileIngestionDlqTopic,
+      validatedChunksDlqTopic: config.kafka.validatedChunksDlqTopic,
     });
 
     try {
       await admin.createTopics({
         topics: [
           {
-            topic: config.kafka.ingestionTopic,
-            numPartitions: config.kafka.ingestionPartitions,
-            replicationFactor: config.kafka.ingestionReplicationFactor,
+            topic: config.kafka.fileIngestionTopic,
+            numPartitions: config.kafka.fileIngestionPartitions,
+            replicationFactor: config.kafka.fileIngestionReplicationFactor,
           },
           {
-            topic: config.kafka.dlqTopic,
-            numPartitions: config.kafka.dlqPartitions,
-            replicationFactor: config.kafka.dlqReplicationFactor,
+            topic: config.kafka.validatedChunksTopic,
+            numPartitions: config.kafka.validatedChunksPartitions,
+            replicationFactor: config.kafka.validatedChunksReplicationFactor,
+          },
+          {
+            topic: config.kafka.fileIngestionDlqTopic,
+            numPartitions: 3,
+            replicationFactor: 3,
+          },
+          {
+            topic: config.kafka.validatedChunksDlqTopic,
+            numPartitions: 3,
+            replicationFactor: 3,
           },
         ],
         waitForLeaders: true,
