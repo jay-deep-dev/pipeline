@@ -14,6 +14,7 @@ import { createDLQMessage } from '../../shared/src/kafka-schemas.js';
 
 const config = getConfig();
 const logger = createLogger('kafka-consumer', config.logging.level);
+import os from 'os';
 
 /**
  * Kafka Consumer Service
@@ -64,7 +65,7 @@ class KafkaConsumer {
 
       // Create producer for DLQ messages
       this.producer = this.kafka.producer({
-        maxInFlightRequests: 1,
+        maxInFlightRequests: 5,
         idempotent: true,
       });
 
@@ -179,6 +180,18 @@ class KafkaConsumer {
       const messageValue = JSON.parse(message.value.toString());
       jobMessage = messageValue;
 
+      const WORKER_ID = `${os.hostname()}-${process.pid}`;
+
+      // Log the worker, partition, offset, and jobId
+      logger.info('Consuming Kafka message', {
+        workerId: WORKER_ID,
+        topic: message.topic,
+        partition: message.partition,
+        offset: message.offset,
+        jobId: jobMessage.jobId,
+        fileId: jobMessage.fileId,
+      });
+
       // Validate message structure
       validateIngestionJobMessage(jobMessage);
 
@@ -282,7 +295,7 @@ class KafkaConsumer {
               await this.processMessage(message);
 
               resolveOffset(message.offset); // mark as processed
-              await heartbeat();             
+              await heartbeat();
             } catch (error) {
               logger.error('Error processing Kafka message', {
                 topic: batch.topic,

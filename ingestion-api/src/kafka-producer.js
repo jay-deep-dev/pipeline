@@ -40,7 +40,7 @@ class KafkaProducer {
   async connect() {
     try {
       this.producer = this.kafka.producer({
-        maxInFlightRequests: 1,
+        maxInFlightRequests: 5,
         idempotent: true,
         transactionTimeout: 30000,
       });

@@ -229,7 +229,7 @@ services:
       - csv-pipeline-network
     restart: unless-stopped
     deploy:
-      replicas: 2  # Horizontal scaling example
+      replicas: 6  # Horizontal scaling example
 
   # DLQ Handler Service
   dlq-handler:
@@ -258,6 +258,9 @@ services:
     networks:
       - csv-pipeline-network
     restart: unless-stopped
+    deploy:
+      replicas: 3  # Horizontal scaling example
+
 
 networks:
   csv-pipeline-network:
