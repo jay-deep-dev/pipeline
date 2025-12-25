@@ -308,10 +308,9 @@ CSV Ingestion Pipeline/
 │   ├── bulk-upload-test.js     # Bulk upload test
 │   └── generate-sample-csv.js  # CSV generator
 ├── docker-compose.yml           # Docker Compose configuration
-├── env/                        # Environment configurations
-│   ├── env.example
-│   ├── env.local
-│   └── env.docker
+│   env.example                  # Environment configurations
+│   env.local
+│   env.docker
 └── README.md                    # This file
 ```
 
