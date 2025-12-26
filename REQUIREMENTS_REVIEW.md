@@ -242,7 +242,7 @@ async insertBatch(documents, jobId, fileId, options = {}) {
   }));
   const result = await this.collection.bulkWrite(operations, {
     ordered,
-    writeConcern: { w: 'majority' }
+    writeConcern: { w: 1 }
   });
 }
 ```
