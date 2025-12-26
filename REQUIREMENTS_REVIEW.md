@@ -291,7 +291,7 @@ async insertBatch(documents, jobId, fileId, options = {}) {
 **Optimizations:**
 - ✅ Streaming CSV processing (no full file loading)
 - ✅ Batch MongoDB inserts (reduces round trips)
-- ✅ Connection pooling (MongoDB: maxPoolSize: 50)
+- ✅ Connection pooling (MongoDB: maxPoolSize: 20)
 - ✅ Horizontal scaling (multiple workers via consumer groups)
 - ✅ Kafka partitions enable parallel processing
 - ✅ Idempotent Kafka producer
