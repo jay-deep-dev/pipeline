@@ -70,8 +70,8 @@ export function validateRow(row, rowNumber, jobId, fileId) {
   const errors = [];
   
   // Validate id
-  if (!row.id || (typeof row.id !== 'string' && typeof row.id !== 'number')) {
-    errors.push('id is required and must be a string or number');
+  if (!row.id || (typeof row.id !== 'number')) {
+    errors.push('id is required and must be a number');
   }
   
   // Validate name
