@@ -150,12 +150,24 @@ services:
       - mongodb-data:/data/db
     networks:
       - csv-pipeline-network
-    command: mongod --wiredTigerCacheSizeGB 2
+    command: >
+      mongod 
+      --wiredTigerCacheSizeGB 2
+      --maxConns 500
+      --logpath /var/log/mongodb/mongod.log
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
-      interval: 5s
+      interval: 10s
       timeout: 5s
-      retries: 10
+      retries: 5
+    restart: unless-stopped
+    # Add memory limits to prevent OOM
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+        reservations:
+          memory: 2G
 
   # Ingestion API Service
   ingestion-api:
@@ -214,7 +226,7 @@ services:
       KAFKA_FILE_INGESTION_DLQ_TOPIC: ${KAFKA_FILE_INGESTION_DLQ_TOPIC:-file-ingestion-dlq}
       KAFKA_VALIDATION_CONSUMER_GROUP_ID: ${KAFKA_VALIDATION_CONSUMER_GROUP_ID:-validation-service-workers}
       UPLOAD_DIR: ${UPLOAD_DIR:-/app/uploads}
-      VALIDATION_CHUNK_SIZE: ${VALIDATION_CHUNK_SIZE:-5000}
+      VALIDATION_CHUNK_SIZE: ${VALIDATION_CHUNK_SIZE:-10000}
       VALIDATION_MAX_CONCURRENT_FILES: ${VALIDATION_MAX_CONCURRENT_FILES:-6}
       VALIDATION_POLL_INTERVAL_MS: ${VALIDATION_POLL_INTERVAL_MS:-100}
       LOG_LEVEL: ${LOG_LEVEL:-info}
@@ -230,8 +242,8 @@ services:
     networks:
       - csv-pipeline-network
     restart: unless-stopped
-    deploy:
-      replicas: 6  # Horizontal scaling for validation
+    # deploy:
+    #   replicas: 6  # Horizontal scaling for validation
 
   # DB Ingestion Service (can scale horizontally)
   db-ingestion-service:
@@ -269,8 +281,8 @@ services:
     networks:
       - csv-pipeline-network
     restart: unless-stopped
-    deploy:
-      replicas: 6  # Horizontal scaling for DB ingestion
+    # deploy:
+    #   replicas: 6  # Horizontal scaling for DB ingestion
 
   # DLQ Handler Service (for file-ingestion-dlq)
   dlq-handler-file-ingestion:
@@ -299,8 +311,8 @@ services:
     networks:
       - csv-pipeline-network
     restart: unless-stopped
-    deploy:
-      replicas: 3
+    # deploy:
+    #   replicas: 3
 
   # DLQ Handler Service (for validated-chunks-dlq)
   dlq-handler-validated-chunks:
@@ -329,8 +341,8 @@ services:
     networks:
       - csv-pipeline-network
     restart: unless-stopped
-    deploy:
-      replicas: 3
+    # deploy:
+    #   replicas: 3
 
 
 networks:
@@ -344,3 +356,5 @@ volumes:
   mongodb-data:
   zookeeper-data:
   zookeeper-log:
+
+    #  docker compose up -d --scale validation-service=10  --scale db-ingestion-service=20
