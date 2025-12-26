@@ -1,10 +1,8 @@
 /**
- * MongoDB Client Module
+ * MongoDB Client Module (Fixed with Retry & Health Checks)
  * 
- * Manages MongoDB connection and provides batch insert operations.
- * Optimized for high-throughput bulk inserts with configurable batch sizes.
- * 
- * @module mongodb-client
+ * Manages MongoDB connection with automatic reconnection, health checks,
+ * and optimized settings for high-volume processing.
  */
 
 import { MongoClient } from 'mongodb';
@@ -13,10 +11,6 @@ import { getConfig, createLogger } from '../../shared/index.js';
 const config = getConfig();
 const logger = createLogger('mongodb-client', config.logging.level);
 
-/**
- * MongoDB Client Service
- * Handles connection and batch operations
- */
 class MongoDBClient {
   constructor() {
     this.client = null;
@@ -25,141 +19,199 @@ class MongoDBClient {
     this.errorRecordsCollection = null;
     this.jobsCollection = null;
     this.isConnected = false;
+    this.reconnectAttempts = 0;
+    this.maxReconnectAttempts = 10;
+    this.reconnectDelay = 5000; // Start with 5 seconds
   }
 
   /**
-   * Connect to MongoDB
-   * @returns {Promise<void>}
+   * Connect to MongoDB with retry logic
    */
   async connect() {
-    try {
-      this.client = new MongoClient(config.mongodb.uri, {
-        maxPoolSize: 50,
-        minPoolSize: 5,
-        maxIdleTimeMS: 30000,
-        serverSelectionTimeoutMS: 5000,
-        socketTimeoutMS: 45000,
-      });
+    const maxRetries = 5;
+    let attempt = 0;
 
-      await this.client.connect();
-      this.db = this.client.db(config.mongodb.database);
-      this.validRecordsCollection = this.db.collection(config.mongodb.validRecordsCollection);
-      this.errorRecordsCollection = this.db.collection(config.mongodb.errorRecordsCollection);
-      this.jobsCollection = this.db.collection(config.mongodb.jobsCollection);
+    while (attempt < maxRetries) {
+      try {
+        // Close existing connection if any
+        if (this.client) {
+          await this.client.close().catch(() => {});
+        }
 
-      // Create indexes for better query performance
-      await this.createIndexes();
+        // Create new client with optimized settings for high load
+        this.client = new MongoClient(config.mongodb.uri, {
+          maxPoolSize: 20,             
+          minPoolSize: 5,                
+          maxIdleTimeMS: 60000,          
+          serverSelectionTimeoutMS: 30000, 
+          socketTimeoutMS: 60000,  
+          connectTimeoutMS: 30000,       
+          heartbeatFrequencyMS: 10000,
+          retryWrites: true,          
+          retryReads: true,         
+          monitorCommands: false,
+        });
 
-      this.isConnected = true;
-      logger.info('MongoDB connected', {
-        uri: config.mongodb.uri,
-        database: config.mongodb.database,
-        validRecordsCollection: config.mongodb.validRecordsCollection,
-        errorRecordsCollection: config.mongodb.errorRecordsCollection,
-        jobsCollection: config.mongodb.jobsCollection,
-      });
-    } catch (error) {
-      logger.error('Failed to connect to MongoDB', {
-        error: error.message,
-        uri: config.mongodb.uri,
-      });
-      throw error;
+        await this.client.connect();
+        
+        this.db = this.client.db(config.mongodb.database);
+        this.validRecordsCollection = this.db.collection(config.mongodb.validRecordsCollection);
+        this.errorRecordsCollection = this.db.collection(config.mongodb.errorRecordsCollection);
+        this.jobsCollection = this.db.collection(config.mongodb.jobsCollection);
+
+        // Set up topology event listeners for connection monitoring
+        this.setupConnectionMonitoring();
+
+        await this.createIndexes();
+
+        this.isConnected = true;
+        this.reconnectAttempts = 0;
+        
+        logger.info('MongoDB connected successfully', {
+          uri: config.mongodb.uri.replace(/\/\/.*@/, '//*****@'), // Hide credentials
+          database: config.mongodb.database,
+          attempt: attempt + 1,
+        });
+
+        return;
+      } catch (error) {
+        attempt++;
+        logger.error(`MongoDB connection attempt ${attempt}/${maxRetries} failed`, {
+          error: error.message,
+          attempt,
+        });
+
+        if (attempt >= maxRetries) {
+          throw new Error(`Failed to connect to MongoDB after ${maxRetries} attempts: ${error.message}`);
+        }
+
+        // Exponential backoff
+        const delay = Math.min(1000 * Math.pow(2, attempt), 30000);
+        logger.info(`Retrying connection in ${delay}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
     }
   }
 
   /**
-   * Create indexes for performance optimization
-   * @returns {Promise<void>}
+   * Set up connection monitoring to detect and handle disconnections
+   */
+  setupConnectionMonitoring() {
+    if (!this.client) return;
+
+    this.client.on('serverDescriptionChanged', (event) => {
+      logger.debug('MongoDB server description changed', {
+        address: event.address,
+        newDescription: event.newDescription.type,
+      });
+    });
+
+    this.client.on('topologyDescriptionChanged', (event) => {
+      logger.debug('MongoDB topology changed', {
+        type: event.newDescription.type,
+      });
+    });
+
+    this.client.on('close', () => {
+      logger.warn('MongoDB connection closed');
+      this.isConnected = false;
+      this.scheduleReconnect();
+    });
+
+    this.client.on('error', (error) => {
+      logger.error('MongoDB connection error', { error: error.message });
+      this.isConnected = false;
+    });
+  }
+
+  /**
+   * Schedule automatic reconnection
+   */
+  scheduleReconnect() {
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      logger.error('Max reconnection attempts reached. Manual intervention required.');
+      return;
+    }
+
+    this.reconnectAttempts++;
+    const delay = Math.min(this.reconnectDelay * this.reconnectAttempts, 60000);
+
+    logger.info(`Scheduling reconnection attempt ${this.reconnectAttempts} in ${delay}ms`);
+
+    setTimeout(async () => {
+      try {
+        await this.connect();
+      } catch (error) {
+        logger.error('Reconnection failed', { error: error.message });
+      }
+    }, delay);
+  }
+
+  /**
+   * Verify connection is alive before operations
+   */
+  async ensureConnection() {
+    if (!this.isConnected || !this.client) {
+      logger.warn('Connection lost, attempting to reconnect...');
+      await this.connect();
+    }
+
+    try {
+      // Ping to verify connection is actually working
+      await this.db.admin().ping();
+    } catch (error) {
+      logger.error('Connection health check failed', { error: error.message });
+      this.isConnected = false;
+      await this.connect();
+    }
+  }
+
+  /**
+   * Create indexes with error handling
    */
   async createIndexes() {
     try {
-      // // Create indexes for valid records collection
-      // await this.validRecordsCollection.createIndex({ jobId: 1 });
-      // await this.validRecordsCollection.createIndex({ fileId: 1 });
-      // await this.validRecordsCollection.createIndex({ createdAt: 1 });
-      // await this.validRecordsCollection.createIndex({ email: 1 }); // Optional: for email lookups
-      // await this.validRecordsCollection.createIndex({ fileId: 1, createdAt: -1 });
-
-      // // Create indexes for error records collection
-      // await this.errorRecordsCollection.createIndex({ jobId: 1 });
-      // await this.errorRecordsCollection.createIndex({ fileId: 1 });
-      // await this.errorRecordsCollection.createIndex({ createdAt: 1 });
-      // await this.errorRecordsCollection.createIndex({ fileId: 1, createdAt: -1 });
-
-      // // Create indexes for jobs collection
-      // await this.jobsCollection.createIndex({ jobId: 1 }, { unique: true });
-      // await this.jobsCollection.createIndex({ fileId: 1 });
-      // await this.jobsCollection.createIndex({ status: 1 });
+      // Create only essential indexes to avoid overhead
       await this.jobsCollection.createIndex({ createdAt: 1 });
-
       logger.debug('MongoDB indexes created');
     } catch (error) {
       logger.warn('Failed to create indexes', { error: error.message });
-      // Don't throw - indexes might already exist
     }
   }
 
   /**
-   * Disconnect from MongoDB
-   * @returns {Promise<void>}
+   * Insert valid records with connection verification
    */
-  async disconnect() {
-    try {
-      if (this.client) {
-        await this.client.close();
-        this.isConnected = false;
-        logger.info('MongoDB disconnected');
-      }
-    } catch (error) {
-      logger.error('Error disconnecting from MongoDB', {
-        error: error.message,
-      });
-    }
-  }
-
-  /**
-   * Insert valid records in batches
-   * 
-   * @param {Object[]} documents - Array of valid documents to insert
-   * @param {string} jobId - Job identifier
-   * @param {string} fileId - File identifier
-   * @param {Object} [options] - Insert options
-   * @param {boolean} [options.ordered=false] - Whether inserts should be ordered
-   * @returns {Promise<Object>} Insert result with statistics
-   */
-  async insertValidRecords(documents, jobId, fileId, options = {}) {
-    if (!this.isConnected) {
-      throw new Error('MongoDB not connected');
-    }
-
+  async insertValidRecords(documents, jobId,fileName, fileId, options = {}) {
     if (!documents || documents.length === 0) {
-      return {
-        insertedCount: 0,
-        success: true,
-      };
+      return { insertedCount: 0, success: true };
     }
+
+    // Ensure connection is healthy
+    await this.ensureConnection();
 
     const { ordered = false } = options;
 
     try {
-      // Documents already have metadata from validation service
       const operations = documents.map((doc) => ({
         insertOne: {
           document: {
             ...doc,
-            insertedAt: new Date(), // Ensure insertedAt is set
+            fileName,
+            insertedAt: new Date(),
           },
         },
       }));
 
       const result = await this.validRecordsCollection.bulkWrite(operations, {
         ordered,
-        writeConcern: { w: 1},
+        writeConcern: { w: 1 },
       });
 
-      logger.debug('Valid records batch inserted to MongoDB', {
+      logger.debug('Valid records inserted', {
         jobId,
         fileId,
+        fileName,
         insertedCount: result.insertedCount,
         batchSize: documents.length,
       });
@@ -170,21 +222,18 @@ class MongoDBClient {
         result,
       };
     } catch (error) {
-      logger.error('Failed to insert valid records batch to MongoDB', {
+      logger.error('Failed to insert valid records', {
         jobId,
         fileId,
         batchSize: documents.length,
         error: error.message,
+        code: error.code,
       });
 
-      if (error.writeErrors && error.writeErrors.length > 0) {
-        const successfulInserts = documents.length - error.writeErrors.length;
-        return {
-          insertedCount: successfulInserts,
-          success: false,
-          error: error.message,
-          writeErrors: error.writeErrors,
-        };
+      // Check if it's a connection error and mark as disconnected
+      if (this.isConnectionError(error)) {
+        this.isConnected = false;
+        this.scheduleReconnect();
       }
 
       throw error;
@@ -192,36 +241,25 @@ class MongoDBClient {
   }
 
   /**
-   * Insert error records in batches
-   * 
-   * @param {Object[]} documents - Array of error documents to insert
-   * @param {string} jobId - Job identifier
-   * @param {string} fileId - File identifier
-   * @param {Object} [options] - Insert options
-   * @param {boolean} [options.ordered=false] - Whether inserts should be ordered
-   * @returns {Promise<Object>} Insert result with statistics
+   * Insert error records with connection verification
    */
-  async insertErrorRecords(documents, jobId, fileId, options = {}) {
-    if (!this.isConnected) {
-      throw new Error('MongoDB not connected');
+  async insertErrorRecords(documents, jobId,fileName, fileId, options = {}) {
+    if (!documents || documents.length === 0) {
+      return { insertedCount: 0, success: true };
     }
 
-    if (!documents || documents.length === 0) {
-      return {
-        insertedCount: 0,
-        success: true,
-      };
-    }
+    // Ensure connection is healthy
+    await this.ensureConnection();
 
     const { ordered = false } = options;
 
     try {
-      // Documents already have metadata from validation service
       const operations = documents.map((doc) => ({
         insertOne: {
           document: {
             ...doc,
-            createdAt: doc.createdAt || new Date(), // Ensure createdAt is set
+            fileName,
+            createdAt: doc.createdAt || new Date(),
           },
         },
       }));
@@ -231,7 +269,7 @@ class MongoDBClient {
         writeConcern: { w: 1 },
       });
 
-      logger.debug('Error records batch inserted to MongoDB', {
+      logger.debug('Error records inserted', {
         jobId,
         fileId,
         insertedCount: result.insertedCount,
@@ -244,21 +282,18 @@ class MongoDBClient {
         result,
       };
     } catch (error) {
-      logger.error('Failed to insert error records batch to MongoDB', {
+      logger.error('Failed to insert error records', {
         jobId,
         fileId,
         batchSize: documents.length,
         error: error.message,
+        code: error.code,
       });
 
-      if (error.writeErrors && error.writeErrors.length > 0) {
-        const successfulInserts = documents.length - error.writeErrors.length;
-        return {
-          insertedCount: successfulInserts,
-          success: false,
-          error: error.message,
-          writeErrors: error.writeErrors,
-        };
+      // Check if it's a connection error
+      if (this.isConnectionError(error)) {
+        this.isConnected = false;
+        this.scheduleReconnect();
       }
 
       throw error;
@@ -266,17 +301,44 @@ class MongoDBClient {
   }
 
   /**
-   * Insert documents in batches (legacy method for backward compatibility)
-   * @deprecated Use insertValidRecords or insertErrorRecords instead
+   * Check if error is related to connection issues
    */
-  async insertBatch(documents, jobId, fileId, options = {}) {
-    return this.insertValidRecords(documents, jobId, fileId, options);
+  isConnectionError(error) {
+    const connectionErrorCodes = [
+      'ENOTFOUND',
+      'ECONNREFUSED',
+      'ETIMEDOUT',
+      'ECONNRESET',
+      'EPIPE',
+      'MongoNetworkError',
+      'MongoTimeoutError',
+    ];
+
+    return connectionErrorCodes.some(code => 
+      error.message.includes(code) || 
+      error.name.includes(code) ||
+      error.code === code
+    );
   }
 
   /**
-   * Get valid records collection instance
-   * @returns {Object} MongoDB collection
+   * Graceful disconnect
    */
+  async disconnect() {
+    try {
+      if (this.client) {
+        await this.client.close();
+        this.isConnected = false;
+        logger.info('MongoDB disconnected gracefully');
+      }
+    } catch (error) {
+      logger.error('Error disconnecting from MongoDB', {
+        error: error.message,
+      });
+    }
+  }
+
+  // Getter methods
   getValidRecordsCollection() {
     if (!this.isConnected) {
       throw new Error('MongoDB not connected');
@@ -284,10 +346,6 @@ class MongoDBClient {
     return this.validRecordsCollection;
   }
 
-  /**
-   * Get error records collection instance
-   * @returns {Object} MongoDB collection
-   */
   getErrorRecordsCollection() {
     if (!this.isConnected) {
       throw new Error('MongoDB not connected');
@@ -295,10 +353,6 @@ class MongoDBClient {
     return this.errorRecordsCollection;
   }
 
-  /**
-   * Get jobs collection instance
-   * @returns {Object} MongoDB collection
-   */
   getJobsCollection() {
     if (!this.isConnected) {
       throw new Error('MongoDB not connected');
@@ -306,19 +360,6 @@ class MongoDBClient {
     return this.jobsCollection;
   }
 
-  /**
-   * Get collection instance (legacy method for backward compatibility)
-   * @deprecated Use getValidRecordsCollection instead
-   * @returns {Object} MongoDB collection
-   */
-  getCollection() {
-    return this.getValidRecordsCollection();
-  }
-
-  /**
-   * Check if connected
-   * @returns {boolean} Connection status
-   */
   isConnectedToDB() {
     return this.isConnected;
   }
@@ -327,10 +368,6 @@ class MongoDBClient {
 // Singleton instance
 let mongoClientInstance = null;
 
-/**
- * Get or create MongoDB client instance
- * @returns {MongoDBClient} MongoDB client instance
- */
 export function getMongoDBClient() {
   if (!mongoClientInstance) {
     mongoClientInstance = new MongoDBClient();
@@ -339,4 +376,3 @@ export function getMongoDBClient() {
 }
 
 export default getMongoDBClient;
-
