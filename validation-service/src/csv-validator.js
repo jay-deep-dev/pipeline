@@ -50,6 +50,7 @@ export async function validateAndChunkFile(fileMessage, producer) {
     jobId,
     fileId,
     filePath,
+    fileName,
     estimatedRowCount,
   } = fileMessage;
 
@@ -62,6 +63,7 @@ export async function validateAndChunkFile(fileMessage, producer) {
   let rowNumber = 1; // 1-indexed (excluding header)
 
   logger.info('Starting CSV validation and chunking', {
+    fileMessage,
     jobId,
     fileId,
     filePath,
@@ -104,6 +106,7 @@ export async function validateAndChunkFile(fileMessage, producer) {
       const chunkId = uuidv4();
       const chunkMessage = createValidatedChunkMessage({
         jobId,
+        fileName,
         fileId,
         chunkId,
         chunkNumber,
@@ -168,6 +171,7 @@ export async function validateAndChunkFile(fileMessage, producer) {
     const chunkId = uuidv4();
     const chunkMessage = createValidatedChunkMessage({
       jobId,
+      fileName,
       fileId,
       chunkId,
       chunkNumber,

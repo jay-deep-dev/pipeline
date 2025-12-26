@@ -89,6 +89,7 @@ export function createFileIngestionMessage({
  * Create a validated chunk message
  * @param {Object} params - Message parameters
  * @param {string} params.jobId - Unique job identifier
+ * @param {string} params.fileName - Unique job identifier
  * @param {string} params.fileId - Unique file identifier
  * @param {string} params.chunkId - Unique chunk identifier
  * @param {number} params.chunkNumber - Chunk sequence number
@@ -101,6 +102,7 @@ export function createFileIngestionMessage({
  */
 export function createValidatedChunkMessage({
   jobId,
+  fileName,
   fileId,
   chunkId,
   chunkNumber,
@@ -112,6 +114,7 @@ export function createValidatedChunkMessage({
 }) {
   return {
     jobId,
+    fileName,
     fileId,
     chunkId,
     chunkNumber,

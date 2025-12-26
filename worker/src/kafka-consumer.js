@@ -190,6 +190,7 @@ class KafkaConsumer {
         partition: message.partition,
         offset: message.offset,
         jobId: chunkMessage.jobId,
+        fileName: chunkMessage.fileName,
         fileId: chunkMessage.fileId,
         chunkId: chunkMessage.chunkId,
         chunkNumber: chunkMessage.chunkNumber,
