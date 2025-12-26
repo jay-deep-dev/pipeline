@@ -73,23 +73,23 @@ class MongoDBClient {
    */
   async createIndexes() {
     try {
-      // Create indexes for valid records collection
-      await this.validRecordsCollection.createIndex({ jobId: 1 });
-      await this.validRecordsCollection.createIndex({ fileId: 1 });
-      await this.validRecordsCollection.createIndex({ createdAt: 1 });
-      await this.validRecordsCollection.createIndex({ email: 1 }); // Optional: for email lookups
-      await this.validRecordsCollection.createIndex({ fileId: 1, createdAt: -1 });
+      // // Create indexes for valid records collection
+      // await this.validRecordsCollection.createIndex({ jobId: 1 });
+      // await this.validRecordsCollection.createIndex({ fileId: 1 });
+      // await this.validRecordsCollection.createIndex({ createdAt: 1 });
+      // await this.validRecordsCollection.createIndex({ email: 1 }); // Optional: for email lookups
+      // await this.validRecordsCollection.createIndex({ fileId: 1, createdAt: -1 });
 
-      // Create indexes for error records collection
-      await this.errorRecordsCollection.createIndex({ jobId: 1 });
-      await this.errorRecordsCollection.createIndex({ fileId: 1 });
-      await this.errorRecordsCollection.createIndex({ createdAt: 1 });
-      await this.errorRecordsCollection.createIndex({ fileId: 1, createdAt: -1 });
+      // // Create indexes for error records collection
+      // await this.errorRecordsCollection.createIndex({ jobId: 1 });
+      // await this.errorRecordsCollection.createIndex({ fileId: 1 });
+      // await this.errorRecordsCollection.createIndex({ createdAt: 1 });
+      // await this.errorRecordsCollection.createIndex({ fileId: 1, createdAt: -1 });
 
-      // Create indexes for jobs collection
-      await this.jobsCollection.createIndex({ jobId: 1 }, { unique: true });
-      await this.jobsCollection.createIndex({ fileId: 1 });
-      await this.jobsCollection.createIndex({ status: 1 });
+      // // Create indexes for jobs collection
+      // await this.jobsCollection.createIndex({ jobId: 1 }, { unique: true });
+      // await this.jobsCollection.createIndex({ fileId: 1 });
+      // await this.jobsCollection.createIndex({ status: 1 });
       await this.jobsCollection.createIndex({ createdAt: 1 });
 
       logger.debug('MongoDB indexes created');
@@ -154,7 +154,7 @@ class MongoDBClient {
 
       const result = await this.validRecordsCollection.bulkWrite(operations, {
         ordered,
-        writeConcern: { w: 'majority' },
+        writeConcern: { w: 1},
       });
 
       logger.debug('Valid records batch inserted to MongoDB', {
@@ -228,7 +228,7 @@ class MongoDBClient {
 
       const result = await this.errorRecordsCollection.bulkWrite(operations, {
         ordered,
-        writeConcern: { w: 'majority' },
+        writeConcern: { w: 1 },
       });
 
       logger.debug('Error records batch inserted to MongoDB', {
