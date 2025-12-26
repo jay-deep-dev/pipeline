@@ -43,6 +43,7 @@ class KafkaProducer {
         maxInFlightRequests: 5,
         idempotent: true,
         transactionTimeout: 30000,
+        acks: -1,
       });
 
       await this.producer.connect();

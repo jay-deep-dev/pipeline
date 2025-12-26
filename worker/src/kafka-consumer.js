@@ -67,6 +67,7 @@ class KafkaConsumer {
       this.producer = this.kafka.producer({
         maxInFlightRequests: 5,
         idempotent: true,
+        acks: -1,
       });
 
       await this.producer.connect();
